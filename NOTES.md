@@ -1,0 +1,1 @@
+1. For replication we send Op(Payload) and removes + adds (adds are removes!) send the dots being removed. This means in the receive buffer it is not just the dot of the op we consider but also the context dots, since if the dot is (a, 3) and the ctx are (a,1), (a,2) then we can apply this, skipping the adds we never saw.

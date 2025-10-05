@@ -1,0 +1,23 @@
+[server]
+actor_id = "node-1"
+api_addr = "127.0.0.1:6379"
+replication_addr = "127.0.0.1:7379"
+db_path = "./data/node-1.db"
+
+[cluster]
+replicas = [
+    { id = "node-1", addr = "127.0.0.1:7379" },
+    { id = "node-2", addr = "127.0.0.1:7380" },
+    { id = "node-3", addr = "127.0.0.1:7381" },
+]
+
+[replication]
+max_retries = 5
+retry_backoff_ms = 100
+buffer_size = 1000
+ack_timeout_ms = 500
+rbilt_startup_delay_ms = 1000
+
+[storage]
+sqlite_cache_size = 10000
+sqlite_busy_timeout = 5000
