@@ -106,20 +106,34 @@ async fn cmd_sadd(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
         return RespValue::Error("ERR wrong number of arguments for 'sadd' command".to_string());
     }
 
-    let key = &parts[1];
+    let key_name = String::from_utf8_lossy(&parts[1]).to_string();
     let members = &parts[2..];
 
-    // TODO: Implement actual SADD logic with database
-    // For now, just update VV and return success
+    // Get or create set
+    let set_id = match crate::orswot::get_or_create_set(server.db.read().await.pool(), &key_name) {
+        Ok(id) => id,
+        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
+    };
 
+    // Generate dot and add elements
     let mut vv = server.version_vector.write().await;
     let dot = vv.increment(&server.config.server.actor_id);
+
+    if let Err(e) = crate::orswot::add_elements(server.db.read().await.pool(), set_id, members, &dot) {
+        return RespValue::Error(format!("ERR database error: {}", e));
+    }
+
+    // Save VV to database
+    if let Err(e) = crate::orswot::save_version_vector(server.db.read().await.pool(), set_id, &vv) {
+        return RespValue::Error(format!("ERR database error: {}", e));
+    }
+
     let vv_str = vv.to_string();
     drop(vv);
 
     debug!(
         "SADD key={} members={} dot={:?}",
-        String::from_utf8_lossy(key),
+        key_name,
         members.len(),
         dot
     );
@@ -132,19 +146,36 @@ async fn cmd_srem(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
         return RespValue::Error("ERR wrong number of arguments for 'srem' command".to_string());
     }
 
-    let key = &parts[1];
+    let key_name = String::from_utf8_lossy(&parts[1]).to_string();
     let members = &parts[2..];
 
-    // TODO: Implement actual SREM logic with database
+    // Get or create set
+    let set_id = match crate::orswot::get_or_create_set(server.db.read().await.pool(), &key_name) {
+        Ok(id) => id,
+        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
+    };
 
+    // Remove elements and get their dots
+    let _removed_dots = match crate::orswot::remove_elements(server.db.read().await.pool(), set_id, members) {
+        Ok(dots) => dots,
+        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
+    };
+
+    // Generate dot for remove operation (causality only)
     let mut vv = server.version_vector.write().await;
     let dot = vv.increment(&server.config.server.actor_id);
+
+    // Save VV to database
+    if let Err(e) = crate::orswot::save_version_vector(server.db.read().await.pool(), set_id, &vv) {
+        return RespValue::Error(format!("ERR database error: {}", e));
+    }
+
     let vv_str = vv.to_string();
     drop(vv);
 
     debug!(
         "SREM key={} members={} dot={:?}",
-        String::from_utf8_lossy(key),
+        key_name,
         members.len(),
         dot
     );
@@ -157,7 +188,7 @@ async fn cmd_scard(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
         return RespValue::Error("ERR wrong number of arguments for 'scard' command".to_string());
     }
 
-    let _key = &parts[1];
+    let key_name = String::from_utf8_lossy(&parts[1]).to_string();
 
     // Check for optional VV context
     let client_vv = if parts.len() > 2 {
@@ -179,8 +210,19 @@ async fn cmd_scard(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
         }
     }
 
-    // TODO: Get actual cardinality from database
-    RespValue::Integer(0)
+    // Get set ID (return 0 if doesn't exist)
+    let set_id = match crate::orswot::get_or_create_set(server.db.read().await.pool(), &key_name) {
+        Ok(id) => id,
+        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
+    };
+
+    // Get cardinality
+    let count = match crate::orswot::cardinality(server.db.read().await.pool(), set_id) {
+        Ok(c) => c,
+        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
+    };
+
+    RespValue::Integer(count)
 }
 
 async fn cmd_sismember(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
@@ -190,8 +232,8 @@ async fn cmd_sismember(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
         );
     }
 
-    let _key = &parts[1];
-    let _member = &parts[2];
+    let key_name = String::from_utf8_lossy(&parts[1]).to_string();
+    let member = &parts[2];
 
     // Check for optional VV context
     let client_vv = if parts.len() > 3 {
@@ -213,8 +255,19 @@ async fn cmd_sismember(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
         }
     }
 
-    // TODO: Check actual membership in database
-    RespValue::Integer(0)
+    // Get set ID
+    let set_id = match crate::orswot::get_or_create_set(server.db.read().await.pool(), &key_name) {
+        Ok(id) => id,
+        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
+    };
+
+    // Check membership
+    let is_member = match crate::orswot::is_member(server.db.read().await.pool(), set_id, member) {
+        Ok(exists) => exists,
+        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
+    };
+
+    RespValue::Integer(if is_member { 1 } else { 0 })
 }
 
 async fn cmd_smismember(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
@@ -224,7 +277,7 @@ async fn cmd_smismember(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
         );
     }
 
-    let _key = &parts[1];
+    let key_name = String::from_utf8_lossy(&parts[1]).to_string();
 
     // Find where VV context starts (if present)
     let (members, client_vv) = {
@@ -250,8 +303,22 @@ async fn cmd_smismember(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
         }
     }
 
-    // TODO: Check actual membership in database
-    let results: Vec<RespValue> = members.iter().map(|_| RespValue::Integer(0)).collect();
+    // Get set ID
+    let set_id = match crate::orswot::get_or_create_set(server.db.read().await.pool(), &key_name) {
+        Ok(id) => id,
+        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
+    };
+
+    // Check membership for all elements
+    let membership = match crate::orswot::are_members(server.db.read().await.pool(), set_id, members) {
+        Ok(results) => results,
+        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
+    };
+
+    let results: Vec<RespValue> = membership
+        .iter()
+        .map(|&is_member| RespValue::Integer(if is_member { 1 } else { 0 }))
+        .collect();
 
     RespValue::Array(results)
 }

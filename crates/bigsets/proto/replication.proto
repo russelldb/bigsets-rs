@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package bigsets.replication;
+
+// Logical timestamp for CRDT operations
+message Dot {
+  string actor_id = 1;
+  uint64 counter = 2;
+}
+
+// Version vector for causal consistency
+message VersionVector {
+  // Map of actor_id -> counter
+  map<string, uint64> counters = 1;
+}
+
+// Replication operation message
+message Operation {
+  uint64 set_id = 1;
+  VersionVector context = 2;  // Causal context (VV at time of operation)
+
+  oneof op_type {
+    AddOp add = 3;
+    RemoveOp remove = 4;
+  }
+}
+
+// Add operation: multiple elements with single dot
+message AddOp {
+  repeated bytes elements = 1;    // Elements being added
+  Dot dot = 2;                     // Single dot for this add operation
+  repeated Dot removed_dots = 3;   // Concurrent removes observed
+}
+
+// Remove operation: multiple elements with single dot
+message RemoveOp {
+  repeated bytes elements = 1;    // Elements being removed
+  Dot dot = 2;                     // New dot for this remove (causality only)
+  repeated Dot removed_dots = 3;   // Dots that were on these elements
+}
+
+// ACK message for acknowledged operations
+message Ack {
+  uint64 set_id = 1;
+  Dot operation_dot = 2;  // Which operation we're acknowledging
+}
+
+// RBILT reconciliation messages (future)
+message RbiltRequest {
+  uint64 set_id = 1;
+  // Future: IBLT encoding parameters
+}
+
+message RbiltResponse {
+  uint64 set_id = 1;
+  // Future: Encoded symbols
+}

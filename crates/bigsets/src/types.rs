@@ -111,18 +111,19 @@ impl Default for VersionVector {
 pub struct Operation {
     pub set_id: u64,
     pub op_type: OpType,
-    pub timestamp: VersionVector,
+    pub context: VersionVector,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OpType {
     Add {
-        element: Bytes,
-        dot: Dot,
-        removed_dots: Vec<Dot>,
+        elements: Vec<Bytes>,    // Multiple elements, single dot
+        dot: Dot,                // Single dot for this add operation
+        removed_dots: Vec<Dot>,  // Concurrent removes observed
     },
     Remove {
-        element: Bytes,
-        removed_dots: Vec<Dot>,
+        elements: Vec<Bytes>,    // Multiple elements being removed
+        dot: Dot,                // New dot for this remove (causality only, VV only)
+        removed_dots: Vec<Dot>,  // Dots that were on these elements
     },
 }

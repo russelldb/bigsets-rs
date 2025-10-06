@@ -5,6 +5,8 @@ pub mod types;
 pub mod server;
 pub mod resp;
 pub mod api;
+pub mod proto;
+pub mod orswot;
 
 pub use bigset::BigSet;
 pub use config::Config;
