@@ -123,7 +123,7 @@ pub fn sadd(
     // Create operation for replication
     let dot = Dot::new(actor_id, counter);
     let operation = Operation {
-        set_id,
+        set_name: set_name.to_string(),
         op_type: OpType::Add {
             elements: members.to_vec(),
             dot,
@@ -195,7 +195,7 @@ pub fn srem(
     // Create operation for replication
     let dot = Dot::new(actor_id, counter);
     let operation = Operation {
-        set_id,
+        set_name: set_name.to_string(),
         op_type: OpType::Remove {
             elements: members.to_vec(),
             dot,

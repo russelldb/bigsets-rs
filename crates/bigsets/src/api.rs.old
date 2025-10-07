@@ -1,4 +1,5 @@
 use crate::commands::{self, CommandResult};
+use crate::replication;
 use crate::resp::{RespError, RespValue};
 use crate::server::Server;
 use crate::types::VersionVector;
@@ -7,7 +8,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 pub struct ApiServer {
     server: Arc<Server>,
@@ -136,8 +137,12 @@ async fn cmd_sadd(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
                 members.len(),
                 op.op_type
             );
-            // TODO: Send operation to replication
-            let _ = op; // Silence warning for now
+
+            // Send operation to peers
+            if let Err(e) = replication::send_to_peers(server, &op).await {
+                warn!("Failed to replicate SADD to peers: {}", e);
+            }
+
             RespValue::SimpleString(format!("OK vv:{}", vv_str))
         }
         Ok(CommandResult::Ok {
@@ -229,8 +234,12 @@ async fn cmd_srem(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
                 members.len(),
                 op.op_type
             );
-            // TODO: Send operation to replication
-            let _ = op; // Silence warning for now
+
+            // Send operation to peers
+            if let Err(e) = replication::send_to_peers(server, &op).await {
+                warn!("Failed to replicate SREM to peers: {}", e);
+            }
+
             RespValue::SimpleString(format!("OK vv:{}", vv_str))
         }
         Ok(CommandResult::Ok {

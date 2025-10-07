@@ -1,6 +1,7 @@
 use crate::buffers::{PendingBuffer, UnackedBuffer};
 use crate::config::{Config, ReplicaInfo};
 use crate::db::Database;
+use crate::replication::ReplicationServer;
 use crate::types::VersionVector;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -17,6 +18,7 @@ pub struct Server {
     pub version_vector: Arc<RwLock<VersionVector>>,
     pub unacked_buffer: Arc<RwLock<UnackedBuffer>>,
     pub pending_buffer: Arc<RwLock<PendingBuffer>>,
+    pub replication_server: Option<Arc<ReplicationServer>>,
 }
 
 impl Server {
@@ -48,14 +50,35 @@ impl Server {
             version_vector: Arc::new(RwLock::new(version_vector)),
             unacked_buffer: Arc::new(RwLock::new(unacked_buffer)),
             pending_buffer: Arc::new(RwLock::new(pending_buffer)),
+            replication_server: None,
         })
     }
 
     pub async fn start(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
         info!("Server starting...");
 
+        // Initialize replication server now that we have Arc<Self>
+        let replication_server = Arc::new(ReplicationServer::new(Arc::clone(&self)));
+
+        // Store it in the server (requires mutable access)
+        unsafe {
+            let server_mut = Arc::as_ptr(&self) as *mut Server;
+            (*server_mut).replication_server = Some(Arc::clone(&replication_server));
+        }
+
         // Stub: RBILT on startup
         self.rbilt_startup().await?;
+
+        // Start replication server
+        info!(
+            "Starting replication server on: {}",
+            self.config.server.replication_addr
+        );
+        let replication_handle = tokio::spawn(async move {
+            if let Err(e) = replication_server.start().await {
+                error!("Replication server error: {}", e);
+            }
+        });
 
         // Start API server
         let api_server = crate::api::ApiServer::new(Arc::clone(&self));
@@ -65,14 +88,8 @@ impl Server {
             }
         });
 
-        // TODO: Start replication server
-        info!(
-            "Replication server would start on: {}",
-            self.config.server.replication_addr
-        );
-
-        // Wait for API server
-        api_handle.await?;
+        // Wait for both servers
+        tokio::try_join!(api_handle, replication_handle)?;
 
         Ok(())
     }

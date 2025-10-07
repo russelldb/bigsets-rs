@@ -114,7 +114,7 @@ impl fmt::Display for ActorIdError {
 impl std::error::Error for ActorIdError {}
 
 /// A logical timestamp representing an actor and counter pair
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Dot {
     pub actor_id: ActorId,
     pub counter: u64,
@@ -218,7 +218,7 @@ impl Default for VersionVector {
 /// Operation type for replication
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Operation {
-    pub set_id: u64,
+    pub set_name: String,
     pub op_type: OpType,
     pub context: VersionVector,
 }

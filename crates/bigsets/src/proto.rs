@@ -36,7 +36,7 @@ pub fn operation_to_proto(op: &Operation) -> replication::Operation {
     };
 
     replication::Operation {
-        set_id: op.set_id,
+        set_name: op.set_name.clone(),
         context: Some(context),
         op_type,
     }
@@ -68,7 +68,7 @@ pub fn proto_to_operation(proto: &replication::Operation) -> Option<Operation> {
     };
 
     Some(Operation {
-        set_id: proto.set_id,
+        set_name: proto.set_name.clone(),
         op_type,
         context,
     })

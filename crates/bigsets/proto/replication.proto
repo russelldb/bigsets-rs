@@ -21,7 +21,7 @@ message VectorEntry {
 
 // Replication operation message
 message Operation {
-  uint64 set_id = 1;
+  string set_name = 1;
   VersionVector context = 2;  // Causal context (VV at time of operation)
 
   oneof op_type {
