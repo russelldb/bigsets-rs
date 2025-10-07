@@ -164,8 +164,9 @@ impl VersionVector {
         }
     }
 
-    /// Check if this VV dominates another (all counters >= other's)
-    pub fn dominates(&self, other: &VersionVector) -> bool {
+    /// Check if this VV descends from another (has seen all events in other)
+    /// Returns true if self >= other (all of other's counters are in self)
+    pub fn descends(&self, other: &VersionVector) -> bool {
         for (actor_id, &other_counter) in &other.counters {
             if self.get(*actor_id) < other_counter {
                 return false;
@@ -415,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn test_version_vector_dominates() {
+    fn test_version_vector_descends() {
         let mut vv1 = VersionVector::new();
         let actor_a = ActorId::from_node_id(1);
         let actor_b = ActorId::from_node_id(2);
@@ -428,24 +429,24 @@ mod tests {
         let mut vv2 = VersionVector::new();
         vv2.increment(actor_a);
 
-        assert!(vv1.dominates(&vv2)); // vv1 >= vv2
-        assert!(!vv2.dominates(&vv1)); // vv2 < vv1
+        assert!(vv1.descends(&vv2)); // vv1 >= vv2
+        assert!(!vv2.descends(&vv1)); // vv2 < vv1
 
         let mut vv3 = VersionVector::new();
         vv3.increment(actor_c);
 
-        assert!(!vv1.dominates(&vv3)); // Concurrent - vv1 doesn't have C
-        assert!(!vv3.dominates(&vv1)); // Concurrent - vv3 doesn't have A or B
+        assert!(!vv1.descends(&vv3)); // Concurrent - vv1 doesn't have C
+        assert!(!vv3.descends(&vv1)); // Concurrent - vv3 doesn't have A or B
     }
 
     #[test]
-    fn test_version_vector_dominates_self() {
+    fn test_version_vector_descends_self() {
         let mut vv = VersionVector::new();
         let actor = ActorId::from_node_id(1);
 
         vv.increment(actor);
 
-        assert!(vv.dominates(&vv)); // Should dominate itself
+        assert!(vv.descends(&vv)); // Should descend itself (reflexive)
     }
 
     #[test]

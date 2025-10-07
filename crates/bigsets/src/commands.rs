@@ -183,7 +183,7 @@ pub fn scard(
 ) -> Result<CommandResult> {
     // Check if we can serve this read (if client provided VV)
     if let Some(cv) = client_vv {
-        if !local_vv.dominates(cv) {
+        if !local_vv.descends(cv) {
             return Ok(CommandResult::NotReady(local_vv.clone()));
         }
     }
@@ -226,7 +226,7 @@ pub fn sismember(
 ) -> Result<CommandResult> {
     // Check if we can serve this read (if client provided VV)
     if let Some(cv) = client_vv {
-        if !local_vv.dominates(cv) {
+        if !local_vv.descends(cv) {
             return Ok(CommandResult::NotReady(local_vv.clone()));
         }
     }
@@ -275,7 +275,7 @@ pub fn smismember(
 
     // Check if we can serve this read (if client provided VV)
     if let Some(cv) = client_vv {
-        if !local_vv.dominates(cv) {
+        if !local_vv.descends(cv) {
             return Ok(CommandResult::NotReady(local_vv.clone()));
         }
     }
@@ -343,7 +343,7 @@ pub fn smembers(
 ) -> Result<CommandResult> {
     // Check if we can serve this read (if client provided VV)
     if let Some(cv) = client_vv {
-        if !local_vv.dominates(cv) {
+        if !local_vv.descends(cv) {
             return Ok(CommandResult::NotReady(local_vv.clone()));
         }
     }
