@@ -19,7 +19,7 @@ pub trait Storage: Send + Sync {
 
     /// Store the version vector to disk
     /// Called by Server after applying writes
-    fn store_vv(&mut self, vv: &VersionVector) -> Result<()>;
+    fn store_vv(&self, vv: &VersionVector) -> Result<()>;
 
     /// Add elements to a set with a given dot
     ///
@@ -37,7 +37,7 @@ pub trait Storage: Send + Sync {
     /// * `removed_dots` - Dots to remove (tombstones from concurrent operations)
     /// * `vv` - Current version vector (to be persisted)
     fn add_elements(
-        &mut self,
+        &self,
         set_name: &str,
         elements: &[Bytes],
         dot: Dot,
@@ -59,7 +59,7 @@ pub trait Storage: Send + Sync {
     /// * `removed_dots` - Dots to remove (tombstones)
     /// * `vv` - Current version vector (to be persisted)
     fn remove_elements(
-        &mut self,
+        &self,
         set_name: &str,
         elements: &[Bytes],
         removed_dots: &[Dot],

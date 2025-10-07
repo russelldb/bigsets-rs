@@ -1,5 +1,5 @@
 use crate::storage::Storage;
-use crate::types::{ActorId, Dot, OpType, Operation, VersionVector};
+use crate::types::{ActorId, OpType, Operation, VersionVector};
 use bytes::Bytes;
 use rusqlite::Result;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ pub enum CommandResult {
 /// with different backends.
 pub struct Server<S: Storage> {
     actor_id: ActorId,
-    storage: Arc<RwLock<S>>,
+    storage: Arc<S>,
     version_vector: Arc<RwLock<VersionVector>>,
 }
 
@@ -38,9 +38,9 @@ impl<S: Storage> Server<S> {
     /// Create a new server with the given storage
     ///
     /// Loads the version vector from storage on startup
-    pub async fn new(actor_id: ActorId, storage: Arc<RwLock<S>>) -> Result<Self> {
+    pub async fn new(actor_id: ActorId, storage: Arc<S>) -> Result<Self> {
         // Load VV from storage
-        let vv = storage.read().await.load_vv()?;
+        let vv = storage.load_vv()?;
 
         Ok(Self {
             actor_id,
@@ -75,8 +75,8 @@ impl<S: Storage> Server<S> {
         let dot = vv.increment(self.actor_id);
 
         // 3. Write to storage (passing VV and dot)
-        let mut storage = self.storage.write().await;
-        storage.add_elements(set_name, members, dot, &[], &vv)?;
+        self.storage
+            .add_elements(set_name, members, dot, &[], &vv)?;
 
         // 4. Create operation for replication
         let operation = Operation {
@@ -130,8 +130,8 @@ impl<S: Storage> Server<S> {
         let dot = vv.increment(self.actor_id);
 
         // 3. Write to storage (passing VV and dot)
-        let mut storage = self.storage.write().await;
-        storage.remove_elements(set_name, members, &[], &vv)?;
+
+        self.storage.remove_elements(set_name, members, &[], &vv)?;
 
         // 4. Create operation for replication
         let operation = Operation {
@@ -176,9 +176,7 @@ impl<S: Storage> Server<S> {
             }
         }
 
-        // Read from storage
-        let storage = self.storage.read().await;
-        let count = storage.count_elements(set_name)?;
+        let count = self.storage.count_elements(set_name)?;
         Ok(CommandResult::Integer(count))
     }
 
@@ -196,9 +194,7 @@ impl<S: Storage> Server<S> {
             }
         }
 
-        // Read from storage
-        let storage = self.storage.read().await;
-        let members = storage.get_elements(set_name)?;
+        let members = self.storage.get_elements(set_name)?;
         Ok(CommandResult::BytesArray(members))
     }
 
@@ -217,9 +213,7 @@ impl<S: Storage> Server<S> {
             }
         }
 
-        // Read from storage
-        let storage = self.storage.read().await;
-        let is_member = storage.is_member(set_name, member)?;
+        let is_member = self.storage.is_member(set_name, member)?;
         Ok(CommandResult::Integer(if is_member { 1 } else { 0 }))
     }
 
@@ -244,9 +238,7 @@ impl<S: Storage> Server<S> {
             }
         }
 
-        // Read from storage
-        let storage = self.storage.read().await;
-        let membership = storage.are_members(set_name, members)?;
+        let membership = self.storage.are_members(set_name, members)?;
         Ok(CommandResult::BoolArray(membership))
     }
 
@@ -272,21 +264,23 @@ impl<S: Storage> Server<S> {
         vv.update(dot.actor_id, dot.counter);
 
         // 5. Apply to storage (passing updated VV)
-        let mut storage = self.storage.write().await;
+
         match &operation.op_type {
             OpType::Add {
                 elements,
                 removed_dots,
                 ..
             } => {
-                storage.add_elements(&operation.set_name, elements, dot, removed_dots, &vv)?;
+                self.storage
+                    .add_elements(&operation.set_name, elements, dot, removed_dots, &vv)?;
             }
             OpType::Remove {
                 elements,
                 removed_dots,
                 ..
             } => {
-                storage.remove_elements(&operation.set_name, elements, removed_dots, &vv)?;
+                self.storage
+                    .remove_elements(&operation.set_name, elements, removed_dots, &vv)?;
             }
         }
 

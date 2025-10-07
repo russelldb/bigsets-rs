@@ -175,9 +175,9 @@ mod tests {
     use crate::types::{ActorId, Dot, OpType, VersionVector};
     use bytes::Bytes;
 
-    fn create_test_op(set_id: u64, counter: u64) -> Operation {
+    fn create_test_op(set_name: &str, counter: u64) -> Operation {
         Operation {
-            set_id,
+            set_name: set_name.to_string(),
             op_type: OpType::Add {
                 elements: vec![Bytes::from("test")],
                 dot: Dot {
@@ -200,8 +200,8 @@ mod tests {
     #[test]
     fn test_unacked_buffer_add() {
         let mut buffer = UnackedBuffer::new();
-        let op1 = create_test_op(1, 1);
-        let op2 = create_test_op(1, 2);
+        let op1 = create_test_op("set1", 1);
+        let op2 = create_test_op("set1", 2);
 
         buffer.add("peer1".to_string(), op1);
         buffer.add("peer1".to_string(), op2);
@@ -214,9 +214,9 @@ mod tests {
     fn test_unacked_buffer_add_multiple_peers() {
         let mut buffer = UnackedBuffer::new();
 
-        buffer.add("peer1".to_string(), create_test_op(1, 1));
-        buffer.add("peer2".to_string(), create_test_op(2, 1));
-        buffer.add("peer1".to_string(), create_test_op(1, 2));
+        buffer.add("peer1".to_string(), create_test_op("set1", 1));
+        buffer.add("peer2".to_string(), create_test_op("set2", 1));
+        buffer.add("peer1".to_string(), create_test_op("set1", 2));
 
         assert_eq!(buffer.peer_count("peer1"), 2);
         assert_eq!(buffer.peer_count("peer2"), 1);
@@ -227,8 +227,8 @@ mod tests {
     #[test]
     fn test_unacked_buffer_remove() {
         let mut buffer = UnackedBuffer::new();
-        buffer.add("peer1".to_string(), create_test_op(1, 1));
-        buffer.add("peer1".to_string(), create_test_op(1, 2));
+        buffer.add("peer1".to_string(), create_test_op("set1", 1));
+        buffer.add("peer1".to_string(), create_test_op("set1", 2));
 
         assert!(buffer.remove("peer1", 0));
         assert_eq!(buffer.peer_count("peer1"), 1);
@@ -242,13 +242,13 @@ mod tests {
     #[test]
     fn test_unacked_buffer_get_peer_ops() {
         let mut buffer = UnackedBuffer::new();
-        let op1 = create_test_op(1, 1);
+        let op1 = create_test_op("set1", 1);
 
         buffer.add("peer1".to_string(), op1.clone());
 
         let ops = buffer.get_peer_ops("peer1").unwrap();
         assert_eq!(ops.len(), 1);
-        assert_eq!(ops[0].0.set_id, 1);
+        assert_eq!(ops[0].0.set_name, "set1");
 
         assert!(buffer.get_peer_ops("peer2").is_none());
     }
@@ -256,8 +256,8 @@ mod tests {
     #[test]
     fn test_unacked_buffer_clear_peer() {
         let mut buffer = UnackedBuffer::new();
-        buffer.add("peer1".to_string(), create_test_op(1, 1));
-        buffer.add("peer2".to_string(), create_test_op(2, 1));
+        buffer.add("peer1".to_string(), create_test_op("set1", 1));
+        buffer.add("peer2".to_string(), create_test_op("set2", 1));
 
         buffer.clear_peer("peer1");
 
@@ -269,8 +269,8 @@ mod tests {
     #[test]
     fn test_unacked_buffer_clear_all() {
         let mut buffer = UnackedBuffer::new();
-        buffer.add("peer1".to_string(), create_test_op(1, 1));
-        buffer.add("peer2".to_string(), create_test_op(2, 1));
+        buffer.add("peer1".to_string(), create_test_op("set1", 1));
+        buffer.add("peer2".to_string(), create_test_op("set2", 1));
 
         buffer.clear_all();
 
@@ -291,15 +291,15 @@ mod tests {
     fn test_pending_buffer_add() {
         let mut buffer = PendingBuffer::new(3);
 
-        assert!(buffer.add(create_test_op(1, 1)));
+        assert!(buffer.add(create_test_op("set1", 1)));
         assert_eq!(buffer.len(), 1);
         assert!(!buffer.is_full());
 
-        assert!(buffer.add(create_test_op(1, 2)));
+        assert!(buffer.add(create_test_op("set1", 2)));
         assert_eq!(buffer.len(), 2);
         assert!(!buffer.is_full());
 
-        assert!(buffer.add(create_test_op(1, 3)));
+        assert!(buffer.add(create_test_op("set1", 3)));
         assert_eq!(buffer.len(), 3);
         assert!(buffer.is_full());
     }
@@ -308,9 +308,9 @@ mod tests {
     fn test_pending_buffer_overflow() {
         let mut buffer = PendingBuffer::new(2);
 
-        assert!(buffer.add(create_test_op(1, 1)));
-        assert!(buffer.add(create_test_op(1, 2)));
-        assert!(!buffer.add(create_test_op(1, 3))); // Should fail - buffer full
+        assert!(buffer.add(create_test_op("set1", 1)));
+        assert!(buffer.add(create_test_op("set1", 2)));
+        assert!(!buffer.add(create_test_op("set1", 3))); // Should fail - buffer full
 
         assert_eq!(buffer.len(), 2); // Still 2 operations
         assert!(buffer.is_full());
@@ -319,36 +319,35 @@ mod tests {
     #[test]
     fn test_pending_buffer_remove() {
         let mut buffer = PendingBuffer::new(10);
-        buffer.add(create_test_op(1, 1));
-        buffer.add(create_test_op(1, 2));
-        buffer.add(create_test_op(1, 3));
+        buffer.add(create_test_op("set1", 1));
+        buffer.add(create_test_op("set1", 2));
+        buffer.add(create_test_op("set1", 3));
 
         let op = buffer.remove(1).unwrap();
-        assert_eq!(op.set_id, 1);
+        assert_eq!(op.set_name, "set1");
         assert_eq!(buffer.len(), 2);
-
         assert!(buffer.remove(5).is_none()); // Out of bounds
     }
 
     #[test]
     fn test_pending_buffer_retain() {
         let mut buffer = PendingBuffer::new(10);
-        buffer.add(create_test_op(1, 1));
-        buffer.add(create_test_op(2, 2));
-        buffer.add(create_test_op(1, 3));
+        buffer.add(create_test_op("set1", 1));
+        buffer.add(create_test_op("set2", 2));
+        buffer.add(create_test_op("set1", 3));
 
-        // Keep only operations for set_id 1
-        buffer.retain(|op| op.set_id == 1);
+        // Keep only operations for set_name =
+        buffer.retain(|op| op.set_name == "set1");
 
         assert_eq!(buffer.len(), 2);
-        assert!(buffer.operations().iter().all(|op| op.set_id == 1));
+        assert!(buffer.operations().iter().all(|op| op.set_name == "set1"));
     }
 
     #[test]
     fn test_pending_buffer_clear() {
         let mut buffer = PendingBuffer::new(10);
-        buffer.add(create_test_op(1, 1));
-        buffer.add(create_test_op(1, 2));
+        buffer.add(create_test_op("set1", 1));
+        buffer.add(create_test_op("set1", 2));
 
         buffer.clear();
 
@@ -359,8 +358,8 @@ mod tests {
     #[test]
     fn test_pending_buffer_drain() {
         let mut buffer = PendingBuffer::new(10);
-        buffer.add(create_test_op(1, 1));
-        buffer.add(create_test_op(1, 2));
+        buffer.add(create_test_op("set1", 1));
+        buffer.add(create_test_op("set1", 2));
 
         let ops = buffer.drain();
 
@@ -372,19 +371,19 @@ mod tests {
     #[test]
     fn test_pending_buffer_operations() {
         let mut buffer = PendingBuffer::new(10);
-        buffer.add(create_test_op(1, 1));
-        buffer.add(create_test_op(2, 2));
+        buffer.add(create_test_op("set1", 1));
+        buffer.add(create_test_op("set2", 2));
 
         let ops = buffer.operations();
         assert_eq!(ops.len(), 2);
-        assert_eq!(ops[0].set_id, 1);
-        assert_eq!(ops[1].set_id, 2);
+        assert_eq!(ops[0].set_name, "set1");
+        assert_eq!(ops[1].set_name, "set2");
     }
 
     #[test]
     fn test_unacked_buffer_retry_tracking() {
         let mut buffer = UnackedBuffer::new();
-        buffer.add("peer1".to_string(), create_test_op(1, 1));
+        buffer.add("peer1".to_string(), create_test_op("set1", 1));
 
         // Get mutable reference and increment retry count
         if let Some(ops) = buffer.get_peer_ops_mut("peer1") {
@@ -399,7 +398,7 @@ mod tests {
     fn test_unacked_buffer_timestamp_tracking() {
         let mut buffer = UnackedBuffer::new();
         let before = Instant::now();
-        buffer.add("peer1".to_string(), create_test_op(1, 1));
+        buffer.add("peer1".to_string(), create_test_op("set1", 1));
         let after = Instant::now();
 
         let ops = buffer.get_peer_ops("peer1").unwrap();

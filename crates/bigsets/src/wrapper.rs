@@ -1,5 +1,5 @@
-use crate::core_server::{CommandResult, Server};
 use crate::replication::ReplicationManager;
+use crate::server::{CommandResult, Server};
 use crate::storage::Storage;
 use crate::types::VersionVector;
 use bytes::Bytes;
@@ -37,12 +37,21 @@ impl<S: Storage> ServerWrapper<S> {
 
         // Send operation to replication (fire and forget)
         if let Some(op) = operation {
+            tracing::info!(
+                "SADD wrapper spawning replication task for set={}",
+                set_name
+            );
             let replication = Arc::clone(&self.replication);
             tokio::spawn(async move {
+                tracing::info!("Replication task started, calling send()");
                 if let Err(e) = replication.send(op).await {
                     error!("Failed to replicate SADD: {}", e);
+                } else {
+                    tracing::info!("Replication send() completed successfully");
                 }
             });
+        } else {
+            tracing::warn!("SADD produced no operation to replicate");
         }
 
         Ok(result)

@@ -147,7 +147,7 @@ impl Storage for SqliteStorage {
         Ok(VersionVector { counters })
     }
 
-    fn store_vv(&mut self, vv: &VersionVector) -> Result<()> {
+    fn store_vv(&self, vv: &VersionVector) -> Result<()> {
         let mut conn = self
             .pool
             .get()
@@ -168,7 +168,7 @@ impl Storage for SqliteStorage {
     }
 
     fn add_elements(
-        &mut self,
+        &self,
         set_name: &str,
         elements: &[Bytes],
         dot: Dot,
@@ -247,7 +247,7 @@ impl Storage for SqliteStorage {
     }
 
     fn remove_elements(
-        &mut self,
+        &self,
         set_name: &str,
         elements: &[Bytes],
         removed_dots: &[Dot],

@@ -35,7 +35,12 @@ impl ReplicationManager {
         &self,
         operation: Operation,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tracing::info!(
+            "ReplicationManager::send called, peers count={}",
+            self.peers.len()
+        );
         for peer in &self.peers {
+            tracing::info!("Attempting to send to peer: {}", peer.addr);
             if let Err(e) = self.send_to_peer(&peer.addr, &operation).await {
                 warn!("Failed to send operation to peer {}: {}", peer.addr, e);
                 // Buffer for retry
@@ -47,6 +52,7 @@ impl ReplicationManager {
                 debug!("Sent operation to peer {}", peer.addr);
             }
         }
+        tracing::info!("ReplicationManager::send finished");
         Ok(())
     }
 

@@ -1,5 +1,5 @@
 use bigsets::{
-    Server,
+    ApiServer, ReplicationManager, ReplicationServer, Server, ServerWrapper, SqliteStorage,
     config::{ClusterConfig, Config, ReplicaInfo, ReplicationConfig, ServerConfig, StorageConfig},
 };
 use clap::Parser;
@@ -136,15 +136,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let node_id = config.server.node_id;
 
         let task = tokio::spawn(async move {
-            let server = match Server::new(config).await {
+            // Create storage
+            let storage = match SqliteStorage::open(&config.server.db_path, &config.storage) {
                 Ok(s) => Arc::new(s),
                 Err(e) => {
-                    error!("Failed to create node {}: {}", node_id, e);
+                    error!("Failed to create storage for node {}: {}", node_id, e);
                     return;
                 }
             };
 
-            if let Err(e) = server.start().await {
+            // Create server
+            let server = match Server::new(config.server.actor_id(), Arc::clone(&storage)).await {
+                Ok(s) => Arc::new(s),
+                Err(e) => {
+                    error!("Failed to create server for node {}: {}", node_id, e);
+                    return;
+                }
+            };
+
+            // Create replication manager
+            let peers: Vec<_> = config
+                .cluster
+                .replicas
+                .iter()
+                .filter(|r| r.actor_id() != config.server.actor_id())
+                .cloned()
+                .collect();
+            tracing::info!("Node {} configured with {} peers", node_id, peers.len());
+            let replication = Arc::new(ReplicationManager::new(
+                peers,
+                config.replication.buffer_size,
+            ));
+
+            // Create wrapper
+            let wrapper = Arc::new(ServerWrapper::new(
+                Arc::clone(&server),
+                Arc::clone(&replication),
+            ));
+
+            // Start API server
+            let api_server = ApiServer::new(Arc::clone(&wrapper), config.server.api_addr.clone());
+            let api_handle = tokio::spawn(async move {
+                if let Err(e) = api_server.run().await {
+                    error!("API server error: {}", e);
+                }
+            });
+
+            // Start replication server
+            let replication_server = ReplicationServer::new(
+                Arc::clone(&server),
+                Arc::clone(&replication),
+                config.server.replication_addr.clone(),
+            );
+            let repl_handle = tokio::spawn(async move {
+                if let Err(e) = replication_server.run().await {
+                    error!("Replication server error: {}", e);
+                }
+            });
+
+            // Wait for both servers
+            if let Err(e) = tokio::try_join!(api_handle, repl_handle) {
                 error!("Node {} error: {}", node_id, e);
             }
         });
