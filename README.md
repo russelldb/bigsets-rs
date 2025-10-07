@@ -2,6 +2,8 @@
 
 A Rust implementation of a distributed CRDT-based set database with add-wins semantics.
 
+This is a reimplementation of the original [BigSets (Erlang)](https://github.com/russelldb/bigsets-2) project.
+
 ## Features
 
 - **CRDT Add-Wins Set**: Conflict-free replicated data types with add-wins semantics

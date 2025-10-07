@@ -1,2 +1,0 @@
--define(CLIENT_READ, 1).
--define(FOLD, 2).
