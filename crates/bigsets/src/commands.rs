@@ -1,5 +1,5 @@
 use crate::addwinsset;
-use crate::types::{ActorId, Operation, VersionVector};
+use crate::types::{ActorId, Dot, OpType, Operation, VersionVector};
 use bytes::Bytes;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -40,6 +40,9 @@ pub fn sadd(
             "ERR wrong number of arguments for 'sadd' command".to_string(),
         ));
     }
+
+    // Capture context BEFORE incrementing (this is what the sender had seen)
+    let context = vv.clone();
 
     // Get connection and start transaction
     let mut conn = pool
@@ -117,9 +120,21 @@ pub fn sadd(
     // Update local VV
     vv.update(actor_id, counter);
 
+    // Create operation for replication
+    let dot = Dot::new(actor_id, counter);
+    let operation = Operation {
+        set_id,
+        op_type: OpType::Add {
+            elements: members.to_vec(),
+            dot,
+            removed_dots: vec![], // TODO: Track concurrent removes
+        },
+        context,
+    };
+
     Ok(CommandResult::Ok {
         vv: Some(vv.clone()),
-        operation: None, // TODO: Add operation for replication
+        operation: Some(operation),
     })
 }
 
@@ -136,6 +151,9 @@ pub fn srem(
             "ERR wrong number of arguments for 'srem' command".to_string(),
         ));
     }
+
+    // Capture context BEFORE incrementing (this is what the sender had seen)
+    let context = vv.clone();
 
     // Get connection and start transaction
     let mut conn = pool
@@ -174,9 +192,21 @@ pub fn srem(
     // Update local VV
     vv.update(actor_id, counter);
 
+    // Create operation for replication
+    let dot = Dot::new(actor_id, counter);
+    let operation = Operation {
+        set_id,
+        op_type: OpType::Remove {
+            elements: members.to_vec(),
+            dot,
+            removed_dots: vec![], // TODO: Track which dots were on these elements
+        },
+        context,
+    };
+
     Ok(CommandResult::Ok {
         vv: Some(vv.clone()),
-        operation: None, // TODO: Add operation for replication
+        operation: Some(operation),
     })
 }
 

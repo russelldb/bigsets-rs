@@ -127,11 +127,24 @@ async fn cmd_sadd(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
     match result {
         Ok(CommandResult::Ok {
             vv: Some(returned_vv),
-            operation,
+            operation: Some(op),
         }) => {
             let vv_str = returned_vv.to_string();
-            debug!("SADD key={} members={}", key_name, members.len());
-            // TODO: Send operation to replication if Some(operation)
+            debug!(
+                "SADD key={} members={} op_dot={:?}",
+                key_name,
+                members.len(),
+                op.op_type
+            );
+            // TODO: Send operation to replication
+            let _ = op; // Silence warning for now
+            RespValue::SimpleString(format!("OK vv:{}", vv_str))
+        }
+        Ok(CommandResult::Ok {
+            vv: Some(returned_vv),
+            operation: None,
+        }) => {
+            let vv_str = returned_vv.to_string();
             RespValue::SimpleString(format!("OK vv:{}", vv_str))
         }
         Ok(CommandResult::Error(msg)) => RespValue::Error(msg),
@@ -207,11 +220,24 @@ async fn cmd_srem(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
     match result {
         Ok(CommandResult::Ok {
             vv: Some(returned_vv),
-            operation,
+            operation: Some(op),
         }) => {
             let vv_str = returned_vv.to_string();
-            debug!("SREM key={} members={}", key_name, members.len());
-            // TODO: Send operation to replication if Some(operation)
+            debug!(
+                "SREM key={} members={} op_dot={:?}",
+                key_name,
+                members.len(),
+                op.op_type
+            );
+            // TODO: Send operation to replication
+            let _ = op; // Silence warning for now
+            RespValue::SimpleString(format!("OK vv:{}", vv_str))
+        }
+        Ok(CommandResult::Ok {
+            vv: Some(returned_vv),
+            operation: None,
+        }) => {
+            let vv_str = returned_vv.to_string();
             RespValue::SimpleString(format!("OK vv:{}", vv_str))
         }
         Ok(CommandResult::Error(msg)) => RespValue::Error(msg),
