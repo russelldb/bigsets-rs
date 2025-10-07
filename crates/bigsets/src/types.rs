@@ -216,14 +216,14 @@ impl Default for VersionVector {
 }
 
 /// Operation type for replication
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Operation {
     pub set_id: u64,
     pub op_type: OpType,
     pub context: VersionVector,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OpType {
     Add {
         elements: Vec<Bytes>,   // Multiple elements, single dot

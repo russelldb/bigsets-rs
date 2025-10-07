@@ -1,5 +1,5 @@
 use crate::addwinsset;
-use crate::types::{ActorId, VersionVector};
+use crate::types::{ActorId, Operation, VersionVector};
 use bytes::Bytes;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -8,8 +8,11 @@ use rusqlite::Result;
 /// Result type for command execution
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommandResult {
-    /// OK with optional version vector
-    Ok { vv: Option<VersionVector> },
+    /// OK with optional version vector and operation (for replication)
+    Ok {
+        vv: Option<VersionVector>,
+        operation: Option<Operation>,
+    },
     /// Integer result
     Integer(i64),
     /// Boolean array for multi-membership
@@ -116,6 +119,7 @@ pub fn sadd(
 
     Ok(CommandResult::Ok {
         vv: Some(vv.clone()),
+        operation: None, // TODO: Add operation for replication
     })
 }
 
@@ -148,6 +152,7 @@ pub fn srem(
             tx.commit()?;
             return Ok(CommandResult::Ok {
                 vv: Some(vv.clone()),
+                operation: None, // No-op: set doesn't exist
             });
         }
     };
@@ -171,6 +176,7 @@ pub fn srem(
 
     Ok(CommandResult::Ok {
         vv: Some(vv.clone()),
+        operation: None, // TODO: Add operation for replication
     })
 }
 
@@ -447,6 +453,7 @@ mod tests {
         match result {
             CommandResult::Ok {
                 vv: Some(returned_vv),
+                ..
             } => {
                 assert_eq!(returned_vv.get(actor), 1);
             }
@@ -477,6 +484,7 @@ mod tests {
         match result {
             CommandResult::Ok {
                 vv: Some(returned_vv),
+                ..
             } => {
                 assert_eq!(returned_vv.get(actor), 2); // Incremented for remove
             }

@@ -127,9 +127,11 @@ async fn cmd_sadd(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
     match result {
         Ok(CommandResult::Ok {
             vv: Some(returned_vv),
+            operation,
         }) => {
             let vv_str = returned_vv.to_string();
             debug!("SADD key={} members={}", key_name, members.len());
+            // TODO: Send operation to replication if Some(operation)
             RespValue::SimpleString(format!("OK vv:{}", vv_str))
         }
         Ok(CommandResult::Error(msg)) => RespValue::Error(msg),
@@ -205,9 +207,11 @@ async fn cmd_srem(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
     match result {
         Ok(CommandResult::Ok {
             vv: Some(returned_vv),
+            operation,
         }) => {
             let vv_str = returned_vv.to_string();
             debug!("SREM key={} members={}", key_name, members.len());
+            // TODO: Send operation to replication if Some(operation)
             RespValue::SimpleString(format!("OK vv:{}", vv_str))
         }
         Ok(CommandResult::Error(msg)) => RespValue::Error(msg),
