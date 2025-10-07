@@ -1,72 +1,19 @@
+use crate::buffers::{PendingBuffer, UnackedBuffer};
 use crate::config::{Config, ReplicaInfo};
 use crate::db::Database;
-use crate::types::{Operation, VersionVector};
-use std::collections::HashMap;
+use crate::types::VersionVector;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
-
-/// Sender-side unacked buffer for retry logic
-#[derive(Debug)]
-pub struct UnackedBuffer {
-    ops: HashMap<String, Vec<(Operation, Instant, u32)>>, // peer_id -> [(op, sent_at, retry_count)]
-}
-
-impl UnackedBuffer {
-    fn new() -> Self {
-        Self {
-            ops: HashMap::new(),
-        }
-    }
-
-    pub fn add(&mut self, peer_id: String, op: Operation) {
-        self.ops
-            .entry(peer_id)
-            .or_insert_with(Vec::new)
-            .push((op, Instant::now(), 0));
-    }
-
-    pub fn remove(&mut self, peer_id: &str, _op_id: usize) {
-        if let Some(ops) = self.ops.get_mut(peer_id) {
-            ops.retain(|(_, _, _)| true); // TODO: proper op_id tracking
-        }
-    }
-}
-
-/// Receiver-side pending buffer for out-of-order operations
-#[derive(Debug)]
-pub struct PendingBuffer {
-    ops: Vec<Operation>,
-    max_size: usize,
-}
-
-impl PendingBuffer {
-    fn new(max_size: usize) -> Self {
-        Self {
-            ops: Vec::new(),
-            max_size,
-        }
-    }
-
-    pub fn add(&mut self, op: Operation) -> bool {
-        if self.ops.len() >= self.max_size {
-            warn!("Pending buffer overflow, triggering RBILT");
-            return false; // Signal overflow
-        }
-        self.ops.push(op);
-        true
-    }
-
-    pub fn is_full(&self) -> bool {
-        self.ops.len() >= self.max_size
-    }
-}
+use tracing::{error, info};
 
 /// Main server state
 pub struct Server {
     pub config: Config,
     pub db: Arc<RwLock<Database>>,
+    // Does this work? A single VV across all the sets? Doesn't it lead to gaps in a set?
+    // Do gaps matter? I guess if every replicas is a total replica, then no,
+    // except we don't know which dots are for which sets,
+    // unless that information is included in ops and anti-entropy
     pub version_vector: Arc<RwLock<VersionVector>>,
     pub unacked_buffer: Arc<RwLock<UnackedBuffer>>,
     pub pending_buffer: Arc<RwLock<PendingBuffer>>,
@@ -74,7 +21,10 @@ pub struct Server {
 
 impl Server {
     pub async fn new(config: Config) -> Result<Self, Box<dyn std::error::Error>> {
-        info!("Starting server with actor_id: {}", config.server.actor_id);
+        info!(
+            "Starting server with actor_id: {}",
+            config.server.actor_id()
+        );
 
         // Ensure data directory exists
         if let Some(parent) = config.server.db_path.parent() {
@@ -139,8 +89,12 @@ impl Server {
 
         info!("Starting RBILT with peers (STUBBED)");
         for replica in &self.config.cluster.replicas {
-            if replica.id != self.config.server.actor_id {
-                info!("  Would RBILT with peer: {} at {}", replica.id, replica.addr);
+            if replica.actor_id() != self.config.server.actor_id() {
+                info!(
+                    "  Would RBILT with peer: {} at {}",
+                    replica.actor_id(),
+                    replica.addr
+                );
             }
         }
 
@@ -152,7 +106,7 @@ impl Server {
             .cluster
             .replicas
             .iter()
-            .filter(|r| r.id != self.config.server.actor_id)
+            .filter(|r| r.actor_id() != self.config.server.actor_id())
             .cloned()
             .collect()
     }

@@ -1,3 +1,4 @@
+use crate::types::ActorId;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -11,10 +12,19 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
-    pub actor_id: String,
+    pub node_id: u16,
+    #[serde(default)]
+    pub epoch: u8,
     pub api_addr: String,
     pub replication_addr: String,
     pub db_path: PathBuf,
+}
+
+impl ServerConfig {
+    /// Get the ActorId for this server
+    pub fn actor_id(&self) -> ActorId {
+        ActorId::new(self.node_id, self.epoch)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,8 +34,17 @@ pub struct ClusterConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplicaInfo {
-    pub id: String,
+    pub node_id: u16,
+    #[serde(default)]
+    pub epoch: u8,
     pub addr: String,
+}
+
+impl ReplicaInfo {
+    /// Get the ActorId for this replica
+    pub fn actor_id(&self) -> ActorId {
+        ActorId::new(self.node_id, self.epoch)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

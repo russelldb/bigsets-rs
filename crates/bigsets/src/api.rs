@@ -1,3 +1,4 @@
+use crate::commands::{self, CommandResult};
 use crate::resp::{RespError, RespValue};
 use crate::server::Server;
 use crate::types::VersionVector;
@@ -19,7 +20,10 @@ impl ApiServer {
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(&self.server.config.server.api_addr).await?;
-        info!("API server listening on {}", self.server.config.server.api_addr);
+        info!(
+            "API server listening on {}",
+            self.server.config.server.api_addr
+        );
 
         loop {
             let (socket, addr) = listener.accept().await?;
@@ -96,6 +100,7 @@ async fn process_command(server: &Arc<Server>, value: RespValue) -> RespValue {
         "SCARD" => cmd_scard(server, &parts).await,
         "SISMEMBER" => cmd_sismember(server, &parts).await,
         "SMISMEMBER" => cmd_smismember(server, &parts).await,
+        "SMEMBERS" => cmd_smembers(server, &parts).await,
         "PING" => RespValue::SimpleString("PONG".to_string()),
         _ => RespValue::Error(format!("ERR unknown command '{}'", cmd)),
     }
@@ -109,36 +114,74 @@ async fn cmd_sadd(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
     let key_name = String::from_utf8_lossy(&parts[1]).to_string();
     let members = &parts[2..];
 
-    // Get or create set
-    let set_id = match crate::orswot::get_or_create_set(server.db.read().await.pool(), &key_name) {
-        Ok(id) => id,
-        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
-    };
-
-    // Generate dot and add elements
+    // Execute command using extracted business logic
     let mut vv = server.version_vector.write().await;
-    let dot = vv.increment(&server.config.server.actor_id);
-
-    if let Err(e) = crate::orswot::add_elements(server.db.read().await.pool(), set_id, members, &dot) {
-        return RespValue::Error(format!("ERR database error: {}", e));
-    }
-
-    // Save VV to database
-    if let Err(e) = crate::orswot::save_version_vector(server.db.read().await.pool(), set_id, &vv) {
-        return RespValue::Error(format!("ERR database error: {}", e));
-    }
-
-    let vv_str = vv.to_string();
-    drop(vv);
-
-    debug!(
-        "SADD key={} members={} dot={:?}",
-        key_name,
-        members.len(),
-        dot
+    let result = commands::sadd(
+        server.db.read().await.pool(),
+        server.config.server.actor_id(),
+        &mut *vv,
+        &key_name,
+        members,
     );
 
-    RespValue::SimpleString(format!("OK vv:{}", vv_str))
+    match result {
+        Ok(CommandResult::Ok {
+            vv: Some(returned_vv),
+        }) => {
+            let vv_str = returned_vv.to_string();
+            debug!("SADD key={} members={}", key_name, members.len());
+            RespValue::SimpleString(format!("OK vv:{}", vv_str))
+        }
+        Ok(CommandResult::Error(msg)) => RespValue::Error(msg),
+        Err(e) => RespValue::Error(format!("ERR database error: {}", e)),
+        _ => RespValue::Error("ERR unexpected result".to_string()),
+    }
+}
+
+async fn cmd_smembers(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
+    if parts.len() < 2 {
+        return RespValue::Error(
+            "ERR wrong number of arguments for 'smembers' command".to_string(),
+        );
+    }
+
+    let key_name = String::from_utf8_lossy(&parts[1]).to_string();
+
+    // Optional client version vector for causality
+    let client_vv = if parts.len() > 2 {
+        let vv_str = String::from_utf8_lossy(&parts[2]);
+        if let Some(vv_str) = vv_str.strip_prefix("vv:") {
+            VersionVector::from_str(vv_str)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let local_vv = server.version_vector.read().await;
+    let result = commands::smembers(
+        server.db.read().await.pool(),
+        &*local_vv,
+        &key_name,
+        client_vv.as_ref(),
+    );
+
+    match result {
+        Ok(CommandResult::BytesArray(members)) => {
+            let results: Vec<RespValue> = members
+                .iter()
+                .map(|bytes| RespValue::BulkString(bytes.clone()))
+                .collect();
+            RespValue::Array(results)
+        }
+        Ok(CommandResult::NotReady(vv)) => {
+            RespValue::Error(format!("NOTREADY vv:{}", vv.to_string()))
+        }
+        Ok(CommandResult::Error(msg)) => RespValue::Error(msg),
+        Err(e) => RespValue::Error(format!("ERR database error: {}", e)),
+        _ => RespValue::Error("ERR unexpected result".to_string()),
+    }
 }
 
 async fn cmd_srem(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
@@ -149,38 +192,28 @@ async fn cmd_srem(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
     let key_name = String::from_utf8_lossy(&parts[1]).to_string();
     let members = &parts[2..];
 
-    // Get or create set
-    let set_id = match crate::orswot::get_or_create_set(server.db.read().await.pool(), &key_name) {
-        Ok(id) => id,
-        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
-    };
-
-    // Remove elements and get their dots
-    let _removed_dots = match crate::orswot::remove_elements(server.db.read().await.pool(), set_id, members) {
-        Ok(dots) => dots,
-        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
-    };
-
-    // Generate dot for remove operation (causality only)
+    // Execute command using extracted business logic
     let mut vv = server.version_vector.write().await;
-    let dot = vv.increment(&server.config.server.actor_id);
-
-    // Save VV to database
-    if let Err(e) = crate::orswot::save_version_vector(server.db.read().await.pool(), set_id, &vv) {
-        return RespValue::Error(format!("ERR database error: {}", e));
-    }
-
-    let vv_str = vv.to_string();
-    drop(vv);
-
-    debug!(
-        "SREM key={} members={} dot={:?}",
-        key_name,
-        members.len(),
-        dot
+    let result = commands::srem(
+        server.db.read().await.pool(),
+        server.config.server.actor_id(),
+        &mut *vv,
+        &key_name,
+        members,
     );
 
-    RespValue::SimpleString(format!("OK vv:{}", vv_str))
+    match result {
+        Ok(CommandResult::Ok {
+            vv: Some(returned_vv),
+        }) => {
+            let vv_str = returned_vv.to_string();
+            debug!("SREM key={} members={}", key_name, members.len());
+            RespValue::SimpleString(format!("OK vv:{}", vv_str))
+        }
+        Ok(CommandResult::Error(msg)) => RespValue::Error(msg),
+        Err(e) => RespValue::Error(format!("ERR database error: {}", e)),
+        _ => RespValue::Error("ERR unexpected result".to_string()),
+    }
 }
 
 async fn cmd_scard(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
@@ -202,27 +235,23 @@ async fn cmd_scard(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
         None
     };
 
-    // Check if we can serve this read
-    if let Some(cv) = client_vv {
-        let local_vv = server.version_vector.read().await;
-        if !local_vv.dominates(&cv) {
-            return RespValue::Error(format!("NOTREADY vv:{}", local_vv.to_string()));
+    let local_vv = server.version_vector.read().await;
+    let result = commands::scard(
+        server.db.read().await.pool(),
+        &*local_vv,
+        &key_name,
+        client_vv.as_ref(),
+    );
+
+    match result {
+        Ok(CommandResult::Integer(count)) => RespValue::Integer(count),
+        Ok(CommandResult::NotReady(vv)) => {
+            RespValue::Error(format!("NOTREADY vv:{}", vv.to_string()))
         }
+        Ok(CommandResult::Error(msg)) => RespValue::Error(msg),
+        Err(e) => RespValue::Error(format!("ERR database error: {}", e)),
+        _ => RespValue::Error("ERR unexpected result".to_string()),
     }
-
-    // Get set ID (return 0 if doesn't exist)
-    let set_id = match crate::orswot::get_or_create_set(server.db.read().await.pool(), &key_name) {
-        Ok(id) => id,
-        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
-    };
-
-    // Get cardinality
-    let count = match crate::orswot::cardinality(server.db.read().await.pool(), set_id) {
-        Ok(c) => c,
-        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
-    };
-
-    RespValue::Integer(count)
 }
 
 async fn cmd_sismember(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
@@ -247,27 +276,24 @@ async fn cmd_sismember(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
         None
     };
 
-    // Check if we can serve this read
-    if let Some(cv) = client_vv {
-        let local_vv = server.version_vector.read().await;
-        if !local_vv.dominates(&cv) {
-            return RespValue::Error(format!("NOTREADY vv:{}", local_vv.to_string()));
+    let local_vv = server.version_vector.read().await;
+    let result = commands::sismember(
+        server.db.read().await.pool(),
+        &*local_vv,
+        &key_name,
+        member,
+        client_vv.as_ref(),
+    );
+
+    match result {
+        Ok(CommandResult::Integer(val)) => RespValue::Integer(val),
+        Ok(CommandResult::NotReady(vv)) => {
+            RespValue::Error(format!("NOTREADY vv:{}", vv.to_string()))
         }
+        Ok(CommandResult::Error(msg)) => RespValue::Error(msg),
+        Err(e) => RespValue::Error(format!("ERR database error: {}", e)),
+        _ => RespValue::Error("ERR unexpected result".to_string()),
     }
-
-    // Get set ID
-    let set_id = match crate::orswot::get_or_create_set(server.db.read().await.pool(), &key_name) {
-        Ok(id) => id,
-        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
-    };
-
-    // Check membership
-    let is_member = match crate::orswot::is_member(server.db.read().await.pool(), set_id, member) {
-        Ok(exists) => exists,
-        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
-    };
-
-    RespValue::Integer(if is_member { 1 } else { 0 })
 }
 
 async fn cmd_smismember(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
@@ -295,30 +321,28 @@ async fn cmd_smismember(server: &Arc<Server>, parts: &[Bytes]) -> RespValue {
         (&parts[2..member_end], vv)
     };
 
-    // Check if we can serve this read
-    if let Some(cv) = client_vv {
-        let local_vv = server.version_vector.read().await;
-        if !local_vv.dominates(&cv) {
-            return RespValue::Error(format!("NOTREADY vv:{}", local_vv.to_string()));
+    let local_vv = server.version_vector.read().await;
+    let result = commands::smismember(
+        server.db.read().await.pool(),
+        &*local_vv,
+        &key_name,
+        members,
+        client_vv.as_ref(),
+    );
+
+    match result {
+        Ok(CommandResult::BoolArray(membership)) => {
+            let results: Vec<RespValue> = membership
+                .iter()
+                .map(|&is_member| RespValue::Integer(if is_member { 1 } else { 0 }))
+                .collect();
+            RespValue::Array(results)
         }
+        Ok(CommandResult::NotReady(vv)) => {
+            RespValue::Error(format!("NOTREADY vv:{}", vv.to_string()))
+        }
+        Ok(CommandResult::Error(msg)) => RespValue::Error(msg),
+        Err(e) => RespValue::Error(format!("ERR database error: {}", e)),
+        _ => RespValue::Error("ERR unexpected result".to_string()),
     }
-
-    // Get set ID
-    let set_id = match crate::orswot::get_or_create_set(server.db.read().await.pool(), &key_name) {
-        Ok(id) => id,
-        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
-    };
-
-    // Check membership for all elements
-    let membership = match crate::orswot::are_members(server.db.read().await.pool(), set_id, members) {
-        Ok(results) => results,
-        Err(e) => return RespValue::Error(format!("ERR database error: {}", e)),
-    };
-
-    let results: Vec<RespValue> = membership
-        .iter()
-        .map(|&is_member| RespValue::Integer(if is_member { 1 } else { 0 }))
-        .collect();
-
-    RespValue::Array(results)
 }

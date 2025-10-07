@@ -1,14 +1,13 @@
 [server]
-actor_id = "node-1"
+node_id = 1
+# epoch = 0  # Optional, defaults to 0
 api_addr = "127.0.0.1:6379"
 replication_addr = "127.0.0.1:7379"
 db_path = "./data/node-1.db"
 
 [cluster]
 replicas = [
-    { id = "node-1", addr = "127.0.0.1:7379" },
-    { id = "node-2", addr = "127.0.0.1:7380" },
-    { id = "node-3", addr = "127.0.0.1:7381" },
+    { node_id = 1, addr = "127.0.0.1:7379" }
 ]
 
 [replication]

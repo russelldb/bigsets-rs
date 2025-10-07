@@ -1,7 +1,21 @@
 use bigsets::{Config, Server};
+use clap::Parser;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about = "BigSets Server", long_about = None)]
+struct Args {
+    /// Path to configuration file
+    #[arg(short, long, default_value = "config.toml")]
+    config: String,
+
+    /// Data directory (overrides db_path in config)
+    #[arg(short, long)]
+    data_dir: Option<PathBuf>,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -10,13 +24,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("BigSets Server starting...");
 
-    // Load configuration
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "config.toml".to_string());
+    // Parse command line arguments
+    let args = Args::parse();
 
-    info!("Loading config from: {}", config_path);
-    let config = Config::from_file(&config_path)?;
+    // Load configuration
+    info!("Loading config from: {}", args.config);
+    let mut config = Config::from_file(&args.config)?;
+
+    // Override db_path if --data-dir is provided
+    if let Some(data_dir) = args.data_dir {
+        let db_path = data_dir.join(format!("node-{}.db", config.server.node_id));
+        info!("Overriding db_path with: {:?}", db_path);
+        config.server.db_path = db_path;
+    }
 
     // Create and start server
     let server = Arc::new(Server::new(config).await?);

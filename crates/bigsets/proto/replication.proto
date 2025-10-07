@@ -4,14 +4,19 @@ package bigsets.replication;
 
 // Logical timestamp for CRDT operations
 message Dot {
-  string actor_id = 1;
+  bytes actor_id = 1;  // 4-byte ActorId
   uint64 counter = 2;
 }
 
 // Version vector for causal consistency
 message VersionVector {
-  // Map of actor_id -> counter
-  map<string, uint64> counters = 1;
+  // List of (actor_id, counter) pairs
+  repeated VectorEntry entries = 1;
+}
+
+message VectorEntry {
+  bytes actor_id = 1;  // 4-byte ActorId
+  uint64 counter = 2;
 }
 
 // Replication operation message

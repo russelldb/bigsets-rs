@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(cargo:*)",
-      "Bash(redis-cli:*)"
+      "Bash(redis-cli:*)",
+      "Bash(find:*)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []
