@@ -241,12 +241,13 @@ impl<S: Storage> Server<S> {
     /// Apply a remote operation (called by ReplicationServer)
     ///
     /// Checks causality and applies the operation atomically.
-    /// Returns error if causality is not satisfied (caller should buffer).
-    pub async fn apply_remote_operation(&self, operation: Operation) -> Result<()> {
+    /// Returns Ok(true) if applied, Ok(false) if causality not satisfied (needs buffering),
+    /// or Err if there's a storage error.
+    pub async fn apply_remote_operation(&self, operation: Operation) -> Result<bool> {
         let mut vv = self.version_vector.write().await;
 
         if !vv.descends(&operation.context) {
-            return Err(rusqlite::Error::InvalidQuery); // TODO: Better error type
+            return Ok(false); // Causality not satisfied, needs buffering
         }
 
         let dot = match &operation.op_type {
@@ -287,7 +288,7 @@ impl<S: Storage> Server<S> {
             operation.set_name, dot
         );
 
-        Ok(())
+        Ok(true)
     }
 
     pub fn actor_id(&self) -> ActorId {

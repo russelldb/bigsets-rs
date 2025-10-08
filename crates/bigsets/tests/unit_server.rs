@@ -83,7 +83,7 @@ async fn test_server_apply_remote_operation() {
     println!("Server 2 apply result: {:?}", apply_result);
 
     assert!(
-        apply_result.is_ok(),
+        matches!(apply_result, Ok(true)),
         "Should successfully apply remote operation"
     );
 

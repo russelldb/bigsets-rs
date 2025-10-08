@@ -35,3 +35,4 @@ tempfile.workspace = true
 prost-build = "0.13"
 
 [dev-dependencies]
+proptest-state-machine = "0.5.0"
