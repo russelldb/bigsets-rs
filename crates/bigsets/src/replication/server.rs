@@ -166,11 +166,10 @@ impl<S: Storage + 'static> ReplicationServer<S> {
                             buffer.len(),
                             buffer.max_size()
                         );
-                        // TODO: Consider triggering anti-entropy/RBILT here
+                        // TODO: Consider triggering anti-entropy here
                     }
                 }
                 Err(e) => {
-                    // Storage error - this is a real problem
                     error!(
                         "Storage error applying operation for set={}: {}",
                         operation.set_name, e

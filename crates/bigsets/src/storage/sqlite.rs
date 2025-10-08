@@ -11,6 +11,7 @@ use std::path::Path;
 pub type DbPool = Pool<SqliteConnectionManager>;
 
 /// SQLite implementation of the Storage trait
+#[derive(Clone, Debug)]
 pub struct SqliteStorage {
     pool: DbPool,
 }

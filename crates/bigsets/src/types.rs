@@ -189,6 +189,11 @@ impl VersionVector {
         true
     }
 
+    /// If we've already seen this dot, true
+    pub fn contains_dot(&self, dot: Dot) -> bool {
+        self.get(dot.actor_id) >= dot.counter
+    }
+
     /// Parse from string format "v0:1:0:5,v0:2:0:3" (actorId:counter pairs)
     pub fn from_str(s: &str) -> Option<Self> {
         if s.is_empty() {

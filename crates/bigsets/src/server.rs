@@ -28,6 +28,7 @@ pub enum CommandResult {
 /// This is the heart of the system - manages version vectors, causality,
 /// and coordinates with storage. Generic over Storage to allow testing
 /// with different backends.
+#[derive(Clone, Debug)]
 pub struct Server<S: Storage> {
     actor_id: ActorId,
     storage: Arc<S>,
@@ -253,6 +254,10 @@ impl<S: Storage> Server<S> {
         let dot = match &operation.op_type {
             OpType::Add { dot, .. } | OpType::Remove { dot, .. } => *dot,
         };
+
+        if vv.contains_dot(dot) {
+            return Ok(true); // we've already done it
+        }
 
         vv.update(dot.actor_id, dot.counter);
 
