@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
-/// Fixed-size actor identifier for RBILT compatibility
+/// Fixed-size actor identifier
 ///
 /// Binary layout (4 bytes): [version: u8][node_id: u16][epoch: u8]
 /// - version: Protocol version (currently 0)
@@ -14,34 +14,49 @@ use std::str::FromStr;
 /// Human-readable format: "v0:1234:5" (version:node:epoch)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ActorId {
-    pub version: u8,
-    pub node_id: u16,
-    pub epoch: u8,
+    bytes: [u8; 4],
 }
 
 impl ActorId {
-    /// Create a new ActorId with version 0
+    pub fn version(&self) -> u8 {
+        self.bytes[0]
+    }
+    pub fn node_id(&self) -> u16 {
+        ((self.bytes[1] as u16) << 8) | (self.bytes[2] as u16)
+    }
+    pub fn epoch(&self) -> u8 {
+        self.bytes[3]
+    }
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl ActorId {
     pub fn new(node_id: u16, epoch: u8) -> Self {
         Self {
-            version: 0,
-            node_id,
-            epoch,
+            bytes: [
+                0,                      // version (default 0)
+                (node_id >> 8) as u8,   // node_id high byte
+                (node_id & 0xFF) as u8, // node_id low byte
+                epoch,
+            ],
         }
     }
 
-    /// Create a new ActorId from just node_id (epoch defaults to 0)
-    pub fn from_node_id(node_id: u16) -> Self {
-        Self::new(node_id, 0)
+    fn new_with_version(version: u8, node_id: u16, epoch: u8) -> Self {
+        Self {
+            bytes: [
+                version,                // version
+                (node_id >> 8) as u8,   // node_id high byte
+                (node_id & 0xFF) as u8, // node_id low byte
+                epoch,
+            ],
+        }
     }
 
-    /// Serialize to fixed 4-byte format
-    pub fn to_bytes(&self) -> [u8; 4] {
-        [
-            self.version,
-            (self.node_id >> 8) as u8,   // High byte
-            (self.node_id & 0xFF) as u8, // Low byte
-            self.epoch,
-        ]
+    pub fn from_node_id(node_id: u16) -> Self {
+        Self::new(node_id, 0)
     }
 
     /// Deserialize from fixed 4-byte format
@@ -51,16 +66,14 @@ impl ActorId {
         }
 
         Ok(Self {
-            version: bytes[0],
-            node_id: ((bytes[1] as u16) << 8) | (bytes[2] as u16),
-            epoch: bytes[3],
+            bytes: [bytes[0], bytes[1], bytes[2], bytes[3]],
         })
     }
 }
 
 impl fmt::Display for ActorId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "v{}:{}:{}", self.version, self.node_id, self.epoch)
+        write!(f, "v{}:{}:{}", self.version(), self.node_id(), self.epoch())
     }
 }
 
@@ -85,11 +98,7 @@ impl FromStr for ActorId {
         let node_id: u16 = parts[1].parse().map_err(|_| ActorIdError::InvalidFormat)?;
         let epoch: u8 = parts[2].parse().map_err(|_| ActorIdError::InvalidFormat)?;
 
-        Ok(Self {
-            version,
-            node_id,
-            epoch,
-        })
+        Ok(Self::new_with_version(version, node_id, epoch))
     }
 }
 
@@ -123,6 +132,11 @@ pub struct Dot {
 impl Dot {
     pub fn new(actor_id: ActorId, counter: u64) -> Self {
         Self { actor_id, counter }
+    }
+
+    pub fn from_parts(actor_id: Vec<u8>, counter: u64) -> Result<Self, ActorIdError> {
+        let actor_id = ActorId::from_bytes(&actor_id)?;
+        Ok(Self { actor_id, counter })
     }
 }
 
@@ -245,23 +259,23 @@ mod tests {
     #[test]
     fn test_actor_id_new() {
         let actor = ActorId::new(1234, 5);
-        assert_eq!(actor.version, 0);
-        assert_eq!(actor.node_id, 1234);
-        assert_eq!(actor.epoch, 5);
+        assert_eq!(actor.version(), 0);
+        assert_eq!(actor.node_id(), 1234);
+        assert_eq!(actor.epoch(), 5);
     }
 
     #[test]
     fn test_actor_id_from_node_id() {
         let actor = ActorId::from_node_id(42);
-        assert_eq!(actor.version, 0);
-        assert_eq!(actor.node_id, 42);
-        assert_eq!(actor.epoch, 0);
+        assert_eq!(actor.version(), 0);
+        assert_eq!(actor.node_id(), 42);
+        assert_eq!(actor.epoch(), 0);
     }
 
     #[test]
     fn test_actor_id_to_bytes() {
         let actor = ActorId::new(0x1234, 0x56);
-        let bytes = actor.to_bytes();
+        let bytes = actor.bytes();
         assert_eq!(bytes, [0x00, 0x12, 0x34, 0x56]);
     }
 
@@ -269,9 +283,9 @@ mod tests {
     fn test_actor_id_from_bytes() {
         let bytes = [0x00, 0x12, 0x34, 0x56];
         let actor = ActorId::from_bytes(&bytes).unwrap();
-        assert_eq!(actor.version, 0);
-        assert_eq!(actor.node_id, 0x1234);
-        assert_eq!(actor.epoch, 0x56);
+        assert_eq!(actor.version(), 0);
+        assert_eq!(actor.node_id(), 0x1234);
+        assert_eq!(actor.epoch(), 0x56);
     }
 
     #[test]
@@ -283,7 +297,7 @@ mod tests {
     #[test]
     fn test_actor_id_roundtrip_bytes() {
         let actor1 = ActorId::new(12345, 7);
-        let bytes = actor1.to_bytes();
+        let bytes = actor1.bytes();
         let actor2 = ActorId::from_bytes(&bytes).unwrap();
         assert_eq!(actor1, actor2);
     }
@@ -297,9 +311,9 @@ mod tests {
     #[test]
     fn test_actor_id_from_str() {
         let actor = ActorId::from_str("v0:1234:5").unwrap();
-        assert_eq!(actor.version, 0);
-        assert_eq!(actor.node_id, 1234);
-        assert_eq!(actor.epoch, 5);
+        assert_eq!(actor.version(), 0);
+        assert_eq!(actor.node_id(), 1234);
+        assert_eq!(actor.epoch(), 5);
     }
 
     #[test]

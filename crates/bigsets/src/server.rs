@@ -67,26 +67,20 @@ impl<S: Storage> Server<S> {
             ));
         }
 
-        // 1. Capture context BEFORE incrementing (what we had seen)
         let context = self.version_vector.read().await.clone();
 
-        // 2. Increment VV (in-memory)
         let mut vv = self.version_vector.write().await;
         let dot = vv.increment(self.actor_id);
+        let rem_dots = self.storage.add_elements(set_name, members, dot)?;
 
-        // 3. Write to storage (passing VV and dot)
-        self.storage
-            .add_elements(set_name, members, dot, &[], &vv)?;
-
-        // 4. Create operation for replication
         let operation = Operation {
             set_name: set_name.to_string(),
             op_type: OpType::Add {
                 elements: members.to_vec(),
                 dot,
-                removed_dots: vec![], // TODO: Track concurrent removes
+                removed_dots: rem_dots,
             },
-            context, // Context BEFORE increment
+            context,
         };
 
         debug!(
@@ -96,7 +90,6 @@ impl<S: Storage> Server<S> {
             dot
         );
 
-        // 5. Return both result and operation
         Ok((
             CommandResult::Ok {
                 vv: Some(vv.clone()),
@@ -122,26 +115,28 @@ impl<S: Storage> Server<S> {
             ));
         }
 
-        // 1. Capture context BEFORE incrementing
         let context = self.version_vector.read().await.clone();
 
-        // 2. Increment VV (in-memory)
         let mut vv = self.version_vector.write().await;
         let dot = vv.increment(self.actor_id);
 
-        // 3. Write to storage (passing VV and dot)
-
-        self.storage.remove_elements(set_name, members, &[], &vv)?;
+        let rem_dots = self.storage.remove_elements(set_name, members, dot)?;
 
         // 4. Create operation for replication
-        let operation = Operation {
-            set_name: set_name.to_string(),
-            op_type: OpType::Remove {
-                elements: members.to_vec(),
-                dot,
-                removed_dots: vec![], // TODO: Track which dots were on these elements
-            },
-            context, // Context BEFORE increment
+        let operation = if !rem_dots.is_empty() {
+            let operation = Operation {
+                set_name: set_name.to_string(),
+                op_type: OpType::Remove {
+                    elements: members.to_vec(),
+                    dot,
+                    removed_dots: rem_dots,
+                },
+                context,
+            };
+            Some(operation)
+        } else {
+            // no-op
+            None
         };
 
         debug!(
@@ -156,7 +151,7 @@ impl<S: Storage> Server<S> {
             CommandResult::Ok {
                 vv: Some(vv.clone()),
             },
-            Some(operation),
+            operation,
         ))
     }
 
@@ -247,23 +242,17 @@ impl<S: Storage> Server<S> {
     /// Checks causality and applies the operation atomically.
     /// Returns error if causality is not satisfied (caller should buffer).
     pub async fn apply_remote_operation(&self, operation: Operation) -> Result<()> {
-        // 1. Acquire VV write lock (serializes all writes)
         let mut vv = self.version_vector.write().await;
 
-        // 2. Check causality: have we seen all events the sender had seen?
         if !vv.descends(&operation.context) {
             return Err(rusqlite::Error::InvalidQuery); // TODO: Better error type
         }
 
-        // 3. Extract dot from operation
         let dot = match &operation.op_type {
             OpType::Add { dot, .. } | OpType::Remove { dot, .. } => *dot,
         };
 
-        // 4. Update VV
         vv.update(dot.actor_id, dot.counter);
-
-        // 5. Apply to storage (passing updated VV)
 
         match &operation.op_type {
             OpType::Add {
@@ -271,16 +260,24 @@ impl<S: Storage> Server<S> {
                 removed_dots,
                 ..
             } => {
-                self.storage
-                    .add_elements(&operation.set_name, elements, dot, removed_dots, &vv)?;
+                self.storage.remote_add_elements(
+                    &operation.set_name,
+                    elements,
+                    removed_dots,
+                    dot,
+                )?;
             }
             OpType::Remove {
                 elements,
                 removed_dots,
                 ..
             } => {
-                self.storage
-                    .remove_elements(&operation.set_name, elements, removed_dots, &vv)?;
+                self.storage.remote_remove_elements(
+                    &operation.set_name,
+                    elements,
+                    removed_dots,
+                    dot,
+                )?;
             }
         }
 

@@ -76,7 +76,7 @@ pub fn proto_to_operation(proto: &replication::Operation) -> Option<Operation> {
 
 fn dot_to_proto(dot: &Dot) -> replication::Dot {
     replication::Dot {
-        actor_id: dot.actor_id.to_bytes().to_vec().into(),
+        actor_id: dot.actor_id.bytes().to_vec().into(),
         counter: dot.counter,
     }
 }
@@ -94,7 +94,7 @@ fn version_vector_to_proto(vv: &VersionVector) -> replication::VersionVector {
         .counters
         .iter()
         .map(|(actor_id, &counter)| replication::VectorEntry {
-            actor_id: actor_id.to_bytes().to_vec().into(),
+            actor_id: actor_id.bytes().to_vec().into(),
             counter,
         })
         .collect();

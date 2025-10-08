@@ -17,53 +17,24 @@ pub trait Storage: Send + Sync {
     /// Called once at Server startup
     fn load_vv(&self) -> Result<VersionVector>;
 
-    /// Store the version vector to disk
-    /// Called by Server after applying writes
-    fn store_vv(&self, vv: &VersionVector) -> Result<()>;
-
-    /// Add elements to a set with a given dot
-    ///
-    /// This is the core CRDT add operation:
-    /// - Creates the set if it doesn't exist
-    /// - Inserts elements if not present
-    /// - Associates the dot with each element
-    /// - Removes any tombstoned dots (from concurrent removes)
-    /// - Persists the VV atomically with the operation
-    ///
-    /// # Arguments
-    /// * `set_name` - Name of the set
-    /// * `elements` - Elements to add
-    /// * `dot` - The dot identifying this operation (actor_id, counter)
-    /// * `removed_dots` - Dots to remove (tombstones from concurrent operations)
-    /// * `vv` - Current version vector (to be persisted)
-    fn add_elements(
+    fn remote_add_elements(
         &self,
         set_name: &str,
         elements: &[Bytes],
-        dot: Dot,
         removed_dots: &[Dot],
-        vv: &VersionVector,
+        dot: Dot,
     ) -> Result<()>;
 
-    /// Remove elements from a set
-    ///
-    /// This is the core CRDT remove operation:
-    /// - Removes all dots associated with the elements
-    /// - Cleans up elements that have no remaining dots
-    /// - Removes any tombstoned dots
-    /// - Persists the VV atomically with the operation
-    ///
-    /// # Arguments
-    /// * `set_name` - Name of the set
-    /// * `elements` - Elements to remove
-    /// * `removed_dots` - Dots to remove (tombstones)
-    /// * `vv` - Current version vector (to be persisted)
-    fn remove_elements(
+    fn add_elements(&self, set_name: &str, elements: &[Bytes], dot: Dot) -> Result<Vec<Dot>>;
+
+    fn remove_elements(&self, set_name: &str, elements: &[Bytes], dot: Dot) -> Result<Vec<Dot>>;
+
+    fn remote_remove_elements(
         &self,
         set_name: &str,
         elements: &[Bytes],
         removed_dots: &[Dot],
-        vv: &VersionVector,
+        dot: Dot,
     ) -> Result<()>;
 
     /// Get all elements in a set

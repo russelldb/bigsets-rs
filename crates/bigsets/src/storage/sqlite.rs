@@ -1,10 +1,12 @@
 use crate::config::StorageConfig;
+use crate::sqlf;
 use crate::storage::Storage;
+use crate::storage::sql_utils::{placeholders_1, placeholders_2};
 use crate::types::{ActorId, Dot, VersionVector};
 use bytes::Bytes;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, Result, ToSql};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -59,7 +61,7 @@ impl SqliteStorage {
                 name TEXT UNIQUE NOT NULL
             );
 
-            -- Global version vector (tracks causality across entire database)
+            -- version vector
             CREATE TABLE IF NOT EXISTS version_vector (
                 actor_id BLOB NOT NULL,  -- 4-byte ActorId
                 counter INTEGER NOT NULL,
@@ -75,14 +77,14 @@ impl SqliteStorage {
                 UNIQUE (set_id, value)
             );
 
-            -- Dots pointing to elements (one dot per element per actor)
+            -- Dots pointing to elements (at most one dot per element per actor)
             CREATE TABLE IF NOT EXISTS dots (
                 element_id INTEGER NOT NULL,
                 actor_id BLOB NOT NULL,  -- 4-byte ActorId
                 counter INTEGER NOT NULL,
                 PRIMARY KEY (element_id, actor_id),
                 FOREIGN KEY (element_id) REFERENCES elements(id) ON DELETE CASCADE
-            );
+            ) WITHOUT ROWID;
 
             -- Indexes for performance
             CREATE INDEX IF NOT EXISTS idx_elements_set_value ON elements(set_id, value);
@@ -93,31 +95,110 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// Get set ID by name, or None if it doesn't exist
-    fn get_set(conn: &Connection, set_name: &str) -> Result<Option<u64>> {
-        let mut stmt = conn.prepare("SELECT id FROM sets WHERE name = ?")?;
-        let result: Result<u64> = stmt.query_row([set_name], |row| row.get(0));
-
-        match result {
-            Ok(id) => Ok(Some(id)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Get or create a set by name, returning its ID
-    fn get_or_create_set(conn: &Connection, set_name: &str) -> Result<u64> {
-        if let Some(id) = Self::get_set(conn, set_name)? {
-            return Ok(id);
-        }
-
-        // Create new set
-        conn.execute("INSERT INTO sets (name) VALUES (?)", [set_name])?;
-        Ok(conn.last_insert_rowid() as u64)
-    }
-
     pub fn pool(&self) -> &DbPool {
         &self.pool
+    }
+
+    fn execute_local_update(
+        &self,
+        set_name: &str,
+        elements: &[Bytes],
+        dot: Dot,
+        sql: String,
+    ) -> Result<Vec<Dot>> {
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        if elements.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let tx = conn.transaction()?;
+
+        // Param order must match ?1.. in the SQL:
+        //   ?1 = set_name
+        //   ?2 = dot.actor_id
+        //   ?3 = dot.counter
+        //   ?4.. = each element value
+        let actor_id = dot.actor_id.bytes();
+        let element_slices: Vec<&[u8]> = elements.iter().map(|e| e.as_ref()).collect();
+
+        let mut bind: Vec<&dyn ToSql> = vec![&set_name, &actor_id, &dot.counter];
+        bind.extend(element_slices.iter().map(|s| s as &dyn ToSql));
+        let mut deleted = Vec::new();
+        // Prepare and execute query in a scope to drop stmt before commit
+        {
+            let mut stmt = tx.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(bind), |row| {
+                Ok(Dot::from_parts(row.get(1)?, row.get(2)?)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?)
+            })?;
+
+            for r in rows {
+                let dot = r?;
+                deleted.push(dot);
+            }
+        }
+        tx.commit()?;
+        Ok(deleted)
+    }
+
+    fn execute_remote_update(
+        &self,
+        set_name: &str,
+        elements: &[Bytes],
+        removed_dots: &[Dot],
+        dot: Dot,
+        sql: String,
+    ) -> Result<()> {
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        let mut sql = sql;
+        // If inputs are empty, make the CTEs zero-row so we need no extra bindings.
+        if removed_dots.is_empty() {
+            sql = sql.replace(
+                "delpairs(actor_id, counter) AS (VALUES (?,?))",
+                "delpairs(actor_id, counter) AS (SELECT X'', 0 WHERE 0)",
+            );
+        }
+        if elements.is_empty() {
+            sql = sql.replace(
+                "vals(value) AS (VALUES (?))",
+                "vals(value) AS (SELECT X'' WHERE 0)",
+            );
+        }
+
+        // Bind order:
+        //   ?1 = new_actor_id
+        //   ?2 = new_counter
+        //   ?3 = set_name
+        //   then all delpairs (actor_id, counter)*,
+        //   then all element values
+        let element_slices: Vec<&[u8]> = elements.iter().map(|e| e.as_ref()).collect();
+        let removed_dots_params: Vec<(&[u8], u64)> = removed_dots
+            .iter()
+            .map(|d| (d.actor_id.bytes(), d.counter))
+            .collect();
+        let actor_id = &dot.actor_id.bytes();
+        let mut params: Vec<&dyn ToSql> = vec![actor_id, &dot.counter, &set_name];
+        for i in 0..removed_dots.len() {
+            params.push(&removed_dots_params[i].0);
+            params.push(&removed_dots_params[i].1);
+        }
+        params.extend(element_slices.iter().map(|s| s as &dyn ToSql));
+
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(&sql)?;
+            let _ = stmt.execute(rusqlite::params_from_iter(params))?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 }
 
@@ -147,168 +228,25 @@ impl Storage for SqliteStorage {
         Ok(VersionVector { counters })
     }
 
-    fn store_vv(&self, vv: &VersionVector) -> Result<()> {
-        let mut conn = self
-            .pool
-            .get()
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-
-        let tx = conn.transaction()?;
-
-        for (actor_id, counter) in &vv.counters {
-            let actor_bytes = actor_id.to_bytes();
-            tx.execute(
-                "INSERT INTO version_vector (actor_id, counter) VALUES (?, ?)
-                 ON CONFLICT (actor_id) DO UPDATE SET counter = excluded.counter",
-                rusqlite::params![&actor_bytes[..], counter],
-            )?;
+    fn add_elements(&self, set_name: &str, elements: &[Bytes], dot: Dot) -> Result<Vec<Dot>> {
+        if elements.is_empty() {
+            return Ok(vec![]);
         }
 
-        tx.commit()
+        // Build "(?),(?),(?)" for vals(value)
+        let vals = placeholders_1(elements.len());
+        let sql = sqlf!("../../sql/add_elems.sql", vals = vals);
+        self.execute_local_update(set_name, elements, dot, sql)
     }
 
-    fn add_elements(
-        &self,
-        set_name: &str,
-        elements: &[Bytes],
-        dot: Dot,
-        removed_dots: &[Dot],
-        vv: &VersionVector,
-    ) -> Result<()> {
-        let mut conn = self
-            .pool
-            .get()
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-
-        let tx = conn.transaction()?;
-
-        // Get or create the set
-        let set_id = Self::get_or_create_set(&tx, set_name)?;
-
-        if !elements.is_empty() {
-            // Batch insert elements
-            let query = format!(
-                "INSERT INTO elements (set_id, value) VALUES {}
-                 ON CONFLICT (set_id, value) DO UPDATE SET value = value
-                 RETURNING id",
-                elements
-                    .iter()
-                    .map(|_| "(?, ?)")
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-
-            // Prepare params
-            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-            for element in elements {
-                params.push(Box::new(set_id));
-                params.push(Box::new(element.to_vec()));
-            }
-            let params_refs: Vec<&dyn rusqlite::ToSql> =
-                params.iter().map(|p| p.as_ref()).collect();
-
-            let mut stmt = tx.prepare(&query)?;
-            let element_ids: Vec<u64> = stmt
-                .query_map(params_refs.as_slice(), |row| row.get(0))?
-                .collect::<Result<Vec<_>>>()?;
-
-            // Insert dots for each element
-            let dot_actor = dot.actor_id.to_bytes();
-            for element_id in element_ids {
-                tx.execute(
-                    "INSERT OR IGNORE INTO dots (element_id, actor_id, counter) VALUES (?, ?, ?)",
-                    rusqlite::params![element_id, &dot_actor[..], dot.counter],
-                )?;
-            }
+    fn remove_elements(&self, set_name: &str, elements: &[Bytes], dot: Dot) -> Result<Vec<Dot>> {
+        if elements.is_empty() {
+            return Ok(vec![]);
         }
 
-        // Remove tombstoned dots
-        for removed_dot in removed_dots {
-            let removed_actor = removed_dot.actor_id.to_bytes();
-            tx.execute(
-                "DELETE FROM dots WHERE element_id IN (
-                    SELECT id FROM elements WHERE set_id = ?
-                ) AND actor_id = ? AND counter = ?",
-                rusqlite::params![set_id, &removed_actor[..], removed_dot.counter],
-            )?;
-        }
-
-        // Store VV
-        for (actor_id, counter) in &vv.counters {
-            let actor_bytes = actor_id.to_bytes();
-            tx.execute(
-                "INSERT INTO version_vector (actor_id, counter) VALUES (?, ?)
-                 ON CONFLICT (actor_id) DO UPDATE SET counter = MAX(counter, excluded.counter)",
-                rusqlite::params![&actor_bytes[..], counter],
-            )?;
-        }
-
-        tx.commit()
-    }
-
-    fn remove_elements(
-        &self,
-        set_name: &str,
-        elements: &[Bytes],
-        removed_dots: &[Dot],
-        vv: &VersionVector,
-    ) -> Result<()> {
-        let mut conn = self
-            .pool
-            .get()
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-
-        let tx = conn.transaction()?;
-
-        // Get set ID (if doesn't exist, nothing to remove)
-        let set_id = match Self::get_set(&tx, set_name)? {
-            Some(id) => id,
-            None => {
-                tx.commit()?;
-                return Ok(());
-            }
-        };
-
-        // For each element to remove, delete all its dots
-        for element in elements {
-            tx.execute(
-                "DELETE FROM dots WHERE element_id IN (
-                    SELECT id FROM elements WHERE set_id = ? AND value = ?
-                )",
-                rusqlite::params![set_id, element.to_vec()],
-            )?;
-        }
-
-        // Clean up elements with no dots
-        tx.execute(
-            "DELETE FROM elements WHERE set_id = ? AND NOT EXISTS (
-                SELECT 1 FROM dots WHERE dots.element_id = elements.id
-            )",
-            [set_id],
-        )?;
-
-        // Remove tombstoned dots
-        for removed_dot in removed_dots {
-            let removed_actor = removed_dot.actor_id.to_bytes();
-            tx.execute(
-                "DELETE FROM dots WHERE element_id IN (
-                    SELECT id FROM elements WHERE set_id = ?
-                ) AND actor_id = ? AND counter = ?",
-                rusqlite::params![set_id, &removed_actor[..], removed_dot.counter],
-            )?;
-        }
-
-        // Store VV
-        for (actor_id, counter) in &vv.counters {
-            let actor_bytes = actor_id.to_bytes();
-            tx.execute(
-                "INSERT INTO version_vector (actor_id, counter) VALUES (?, ?)
-                 ON CONFLICT (actor_id) DO UPDATE SET counter = MAX(counter, excluded.counter)",
-                rusqlite::params![&actor_bytes[..], counter],
-            )?;
-        }
-
-        tx.commit()
+        let vals = placeholders_1(elements.len());
+        let sql = sqlf!("../../sql/remove_elems.sql", vals = vals);
+        self.execute_local_update(set_name, elements, dot, sql)
     }
 
     fn get_elements(&self, set_name: &str) -> Result<Vec<Bytes>> {
@@ -317,15 +255,16 @@ impl Storage for SqliteStorage {
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
-        // Get set ID (return empty if doesn't exist)
-        let set_id = match Self::get_set(&conn, set_name)? {
-            Some(id) => id,
-            None => return Ok(Vec::new()),
-        };
-
-        // Get all members
-        let mut stmt = conn.prepare("SELECT value FROM elements WHERE set_id = ?")?;
-        let rows = stmt.query_map([set_id], |row| {
+        let mut stmt = conn.prepare(
+            r#"
+                SELECT e.id AS element_id, e.value
+                FROM elements e
+                JOIN sets s ON s.id = e.set_id
+                WHERE s.name = ?1
+                ORDER BY e.id;
+                "#,
+        )?;
+        let rows = stmt.query_map([set_name], |row| {
             let value: Vec<u8> = row.get(0)?;
             Ok(Bytes::from(value))
         })?;
@@ -339,16 +278,15 @@ impl Storage for SqliteStorage {
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
-        // Get set ID (return 0 if doesn't exist)
-        let set_id = match Self::get_set(&conn, set_name)? {
-            Some(id) => id,
-            None => return Ok(0),
-        };
-
         // Get cardinality
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM elements WHERE set_id = ?",
-            [set_id],
+            r#"
+                SELECT COUNT(e.id)
+                FROM elements e
+                JOIN sets s ON s.id = e.set_id
+                WHERE s.name = ?1;
+                "#,
+            [set_name],
             |row| row.get(0),
         )?;
 
@@ -361,20 +299,20 @@ impl Storage for SqliteStorage {
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
-        // Get set ID (return false if doesn't exist)
-        let set_id = match Self::get_set(&conn, set_name)? {
-            Some(id) => id,
-            None => return Ok(false),
-        };
-
-        // Check membership
         let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM elements WHERE set_id = ? AND value = ?",
-            rusqlite::params![set_id, element.as_ref()],
+            r#"
+                SELECT EXISTS (
+                  SELECT 1
+                  FROM elements e
+                  JOIN sets s ON s.id = e.set_id
+                  WHERE s.name = ?1
+                    AND e.value = ?2
+                );
+                "#,
+            rusqlite::params![set_name, element.as_ref()],
             |row| row.get(0),
         )?;
-
-        Ok(exists > 0)
+        Ok(exists != 0)
     }
 
     fn are_members(&self, set_name: &str, elements: &[Bytes]) -> Result<Vec<bool>> {
@@ -387,38 +325,85 @@ impl Storage for SqliteStorage {
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
-        // Get set ID (return all false if doesn't exist)
-        let set_id = match Self::get_set(&conn, set_name)? {
-            Some(id) => id,
-            None => return Ok(vec![false; elements.len()]),
-        };
+        // Build "(?),(?),(?)" for vals(value)
+        let vals_placeholders = std::iter::repeat("(?)")
+            .take(elements.len())
+            .collect::<Vec<_>>()
+            .join(", ");
 
-        // Batch check membership using IN clause
-        let placeholders = elements.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let query = format!(
-            "SELECT value FROM elements WHERE set_id = ? AND value IN ({})",
-            placeholders
+        let sql = format!(
+            r#"
+                WITH
+                s AS (
+                  SELECT id AS set_id FROM sets WHERE name = ?1
+                ),
+                vals(value) AS (VALUES {vals}),
+                joined AS (
+                  SELECT v.value, e.value AS present
+                  FROM vals v
+                  LEFT JOIN elements e
+                    ON e.value = v.value
+                   AND e.set_id = (SELECT set_id FROM s)
+                )
+                SELECT CASE WHEN present IS NOT NULL THEN 1 ELSE 0 END
+                FROM joined;
+                "#,
+            vals = vals_placeholders
+        );
+        let element_slices: Vec<&[u8]> = elements.iter().map(|e| e.as_ref()).collect();
+
+        // Bind params: ?1 = set_name, then the element values
+        let mut params: Vec<&dyn ToSql> = vec![&set_name];
+        params.extend(element_slices.iter().map(|s| s as &dyn ToSql));
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+            let val: i64 = row.get(0)?;
+            Ok(val != 0)
+        })?;
+
+        let mut out = Vec::with_capacity(elements.len());
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    fn remote_add_elements(
+        &self,
+        set_name: &str,
+        elements: &[Bytes],
+        removed_dots: &[Dot],
+        dot: Dot,
+    ) -> Result<()> {
+        let vals_ph = placeholders_1(elements.len());
+        let delpairs_ph = placeholders_2(removed_dots.len());
+
+        let sql = format!(
+            include_str!("../../sql/remote_add.sql"),
+            vals = vals_ph,
+            delpairs = delpairs_ph,
         );
 
-        // Build params
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(set_id)];
-        for element in elements {
-            params.push(Box::new(element.to_vec()));
-        }
-        let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        self.execute_remote_update(set_name, elements, removed_dots, dot, sql)
+    }
 
-        // Query and collect existing values
-        let mut stmt = conn.prepare(&query)?;
-        let existing_values: std::collections::HashSet<Vec<u8>> = stmt
-            .query_map(params_refs.as_slice(), |row| row.get::<_, Vec<u8>>(0))?
-            .collect::<Result<_>>()?;
+    fn remote_remove_elements(
+        &self,
+        set_name: &str,
+        elements: &[Bytes],
+        removed_dots: &[Dot],
+        dot: Dot,
+    ) -> Result<()> {
+        let vals_ph = placeholders_1(elements.len());
+        let delpairs_ph = placeholders_2(removed_dots.len());
 
-        // Build result array
-        let result = elements
-            .iter()
-            .map(|element| existing_values.contains(element.as_ref()))
-            .collect();
+        let sql = format!(
+            include_str!("../../sql/remote_rem.sql"),
+            vals = vals_ph,
+            delpairs = delpairs_ph,
+        );
 
-        Ok(result)
+        self.execute_remote_update(set_name, elements, removed_dots, dot, sql)
     }
 }
