@@ -8,7 +8,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 /// API server handling RESP protocol over TCP
 ///
@@ -117,14 +117,18 @@ impl<S: Storage + 'static> ApiServer<S> {
 
         let key_name = String::from_utf8_lossy(&parts[1]).to_string();
         let members = &parts[2..];
-
+        trace!("Calling wrapper for sadd");
         match wrapper.sadd(&key_name, members).await {
             Ok(CommandResult::Ok { vv: Some(vv) }) => {
+                trace!("Got a vv result from sadd");
                 RespValue::SimpleString(format!("OK vv:{}", vv.to_string()))
             }
             Ok(CommandResult::Ok { vv: None }) => RespValue::SimpleString("OK".to_string()),
             Ok(CommandResult::Error(msg)) => RespValue::Error(msg),
-            Err(e) => RespValue::Error(format!("ERR database error: {}", e)),
+            Err(e) => {
+                error!("{}", e);
+                RespValue::Error(format!("ERR database error: {}", e))
+            }
             _ => RespValue::Error("ERR unexpected result".to_string()),
         }
     }

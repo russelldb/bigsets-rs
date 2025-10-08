@@ -5,7 +5,7 @@ use crate::types::VersionVector;
 use bytes::Bytes;
 use rusqlite::Result;
 use std::sync::Arc;
-use tracing::error;
+use tracing::{error, trace};
 
 /// Wrapper that coordinates Server and ReplicationManager
 ///
@@ -33,9 +33,11 @@ impl<S: Storage> ServerWrapper<S> {
     ///
     /// Calls server, spawns replication task, returns result
     pub async fn sadd(&self, set_name: &str, members: &[Bytes]) -> Result<CommandResult> {
+        trace!("Calling the server SADD");
         let (result, operation) = self.server.sadd(set_name, members).await?;
 
         // Send operation to replication (fire and forget)
+        trace!("Replication op from SADD");
         if let Some(op) = operation {
             tracing::info!(
                 "SADD wrapper spawning replication task for set={}",

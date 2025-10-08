@@ -4,7 +4,7 @@ use bytes::Bytes;
 use rusqlite::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, trace};
 
 /// Result type for command execution
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +71,7 @@ impl<S: Storage> Server<S> {
 
         let mut vv = self.version_vector.write().await;
         let dot = vv.increment(self.actor_id);
+        trace!("calling storage for SADD");
         let rem_dots = self.storage.add_elements(set_name, members, dot)?;
 
         let operation = Operation {
