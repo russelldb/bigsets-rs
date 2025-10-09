@@ -5,7 +5,6 @@ use proptest::string::bytes_regex;
 use proptest::test_runner::Config;
 use proptest::{prelude::*, sample::select};
 use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
-use std::path::PathBuf;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,

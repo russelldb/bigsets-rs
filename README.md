@@ -6,11 +6,10 @@ This is a reimplementation of the original [BigSets (Erlang)](https://github.com
 
 ## Features
 
-- **CRDT Add-Wins Set**: Conflict-free replicated data types with add-wins semantics
-- **Fixed-size Actor IDs**: 4-byte actor IDs (version:node_id:epoch) for efficient replication
-- **SQLite Storage**: Persistent storage with version vectors and dots
+- **CRDT Add-Wins Set**: Conflict-free replicated data type with add-wins semantics
+- **SQLite Storage**: Persistent storage
 - **Redis-compatible API**: RESP protocol support for familiar commands (SADD, SREM, SCARD, etc.)
-- **Multi-node Replication**: Designed for cluster deployment with RBILT set reconciliation
+- **Multi-node Replication**: Designed for cluster deployment
 
 ## Development
 
@@ -87,10 +86,7 @@ sqlite_busy_timeout = 5000
 
 ## Architecture
 
-- **ActorId**: `[version: u8, node_id: u16, epoch: u8]` = 4 bytes
-- **Dot**: `(ActorId, counter: u64)` uniquely identifies an operation
-- **Version Vector**: Tracks causal dependencies across nodes
-- **Add-Wins Set**: Elements are added with dots, removed dots are tracked separately
+See [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ## License
 
