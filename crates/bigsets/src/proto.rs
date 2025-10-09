@@ -36,7 +36,7 @@ pub fn operation_to_proto(op: &Operation) -> replication::Operation {
     };
 
     replication::Operation {
-        set_id: op.set_id,
+        set_name: op.set_name.clone(),
         context: Some(context),
         op_type,
     }
@@ -68,7 +68,7 @@ pub fn proto_to_operation(proto: &replication::Operation) -> Option<Operation> {
     };
 
     Some(Operation {
-        set_id: proto.set_id,
+        set_name: proto.set_name.clone(),
         op_type,
         context,
     })
@@ -76,7 +76,7 @@ pub fn proto_to_operation(proto: &replication::Operation) -> Option<Operation> {
 
 fn dot_to_proto(dot: &Dot) -> replication::Dot {
     replication::Dot {
-        actor_id: dot.actor_id.to_bytes().to_vec().into(),
+        actor_id: dot.actor_id.bytes().to_vec().into(),
         counter: dot.counter,
     }
 }
@@ -94,7 +94,7 @@ fn version_vector_to_proto(vv: &VersionVector) -> replication::VersionVector {
         .counters
         .iter()
         .map(|(actor_id, &counter)| replication::VectorEntry {
-            actor_id: actor_id.to_bytes().to_vec().into(),
+            actor_id: actor_id.bytes().to_vec().into(),
             counter,
         })
         .collect();

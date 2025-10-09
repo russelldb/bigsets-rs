@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e0e0912b57cd429da696c5e0ff741cb01d94078aa567237b8702cde3399244e6 # shrinks to (initial_state, transitions, seen_counter) = (Cluster { clock: 0, nodes: {1: ModelNode { inner: AddWinsSet { adds: {}, removes: {} } }, 2: ModelNode { inner: AddWinsSet { adds: {}, removes: {} } }, 3: ModelNode { inner: AddWinsSet { adds: {}, removes: {} } }} }, [], None)

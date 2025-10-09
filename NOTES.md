@@ -67,3 +67,6 @@ Anti-Entropy (Periodic, all nodes):
    - Operations stuck in pending buffer (unblock causal chain)
    - Operations where ACK was lost (sender kept retrying unnecessarily)
 (if we exchange vv's to find missing dots, do we even need RBILT? I thought RBILT was to be run over the set of digest dots!)
+
+### 12h29
+We're going to need the same versioned data with atomic visibility hack here too, or large updates will block the user
