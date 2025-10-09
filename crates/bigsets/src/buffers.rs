@@ -86,7 +86,7 @@ impl Default for UnackedBuffer {
 ///
 /// Stores operations that cannot be applied yet due to causality constraints.
 /// When the buffer fills up, it signals the need for RBILT (Reliable Broadcast with Incremental Learning).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PendingBuffer {
     ops: Vec<Operation>,
     max_size: usize,

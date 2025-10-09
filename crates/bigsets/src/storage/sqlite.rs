@@ -209,6 +209,7 @@ impl Storage for SqliteStorage {
             Some(id) => id,
             None => {
                 // Set doesn't exist, nothing to remove
+                println!("Set {} doesn't exist", set_name);
                 return Ok(vec![]);
             }
         };
@@ -216,31 +217,36 @@ impl Storage for SqliteStorage {
         let mut deleted = Vec::new();
         let actor_id = dot.actor_id.bytes();
 
-        // For each element
         for element in elements {
-            // Delete the element from elements table, returning its id
-            let element_id: Option<i64> = tx
-                .query_row(
-                    "DELETE FROM elements WHERE set_id = ?1 AND value = ?2 RETURNING id",
-                    rusqlite::params![set_id, element.as_ref()],
-                    |row| row.get(0),
-                )
-                .optional()?;
+            let mut stmt = tx.prepare(
+                "DELETE FROM dots
+                        WHERE element_id IN (
+                            SELECT id FROM elements
+                            WHERE set_id =  ?1
+                            AND value = ?2
+                        )
+                        RETURNING actor_id, counter",
+            )?;
 
-            if let Some(element_id) = element_id {
-                // Delete and return each dot for this element_id
-                let mut stmt = tx.prepare(
-                    "DELETE FROM dots WHERE element_id = ?1 RETURNING actor_id, counter",
+            let rows = stmt.query_map(rusqlite::params![set_id, element.as_ref()], |row| {
+                Ok(Dot::from_parts(row.get(0)?, row.get(1)?)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?)
+            })?;
+
+            for r in rows {
+                println!("Deleted {:?} dots for element {:?}", r, element);
+                deleted.push(r?);
+            }
+            drop(stmt);
+
+            // Only delete the element if we found dots for it (meaning it existed)
+            if !deleted.is_empty() {
+                tx.execute(
+                    "DELETE FROM elements
+                                WHERE set_id = (SELECT id FROM sets WHERE name = ?1)
+                                AND value = ?2",
+                    rusqlite::params![set_name, element.as_ref()],
                 )?;
-                let rows = stmt.query_map([element_id], |row| {
-                    Ok(Dot::from_parts(row.get(0)?, row.get(1)?)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?)
-                })?;
-
-                for r in rows {
-                    deleted.push(r?);
-                }
-                drop(stmt);
             }
         }
 
