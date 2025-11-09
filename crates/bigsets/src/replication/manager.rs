@@ -2,28 +2,25 @@ use crate::buffers::{PendingBuffer, UnackedBuffer};
 use crate::config::ReplicaInfo;
 use crate::types::Operation;
 use prost::Message;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-/// Manages replication: sending operations to peers, buffering, connection management
-///
-/// This handles all the networking and reliability concerns for replication,
-/// keeping the core Server focused on business logic.
 pub struct ReplicationManager {
-    peers: Vec<ReplicaInfo>,
+    peers: BTreeSet<ReplicaInfo>,
     pending_buffer: Arc<RwLock<PendingBuffer>>,
-    unacked_buffer: Arc<RwLock<UnackedBuffer>>,
+    unsent_buffer: Arc<RwLock<UnackedBuffer>>,
 }
 
 impl ReplicationManager {
-    pub fn new(peers: Vec<ReplicaInfo>, buffer_size: usize) -> Self {
+    pub fn new(peers: BTreeSet<ReplicaInfo>, buffer_size: usize) -> Self {
         Self {
             peers,
             pending_buffer: Arc::new(RwLock::new(PendingBuffer::new(buffer_size))),
-            unacked_buffer: Arc::new(RwLock::new(UnackedBuffer::new())),
+            unsent_buffer: Arc::new(RwLock::new(UnackedBuffer::new())),
         }
     }
 
@@ -44,10 +41,10 @@ impl ReplicationManager {
             if let Err(e) = self.send_to_peer(&peer.addr, &operation).await {
                 warn!("Failed to send operation to peer {}: {}", peer.addr, e);
                 // Buffer for retry
-                self.unacked_buffer
+                self.unsent_buffer
                     .write()
                     .await
-                    .add(peer.addr.clone(), operation.clone());
+                    .add(peer.actor_id(), operation.clone());
             } else {
                 debug!("Sent operation to peer {}", peer.addr);
             }
@@ -88,6 +85,6 @@ impl ReplicationManager {
     }
 
     pub fn unacked_buffer(&self) -> Arc<RwLock<UnackedBuffer>> {
-        Arc::clone(&self.unacked_buffer)
+        Arc::clone(&self.unsent_buffer)
     }
 }

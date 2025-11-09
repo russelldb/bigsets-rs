@@ -1,5 +1,4 @@
 use crate::config::StorageConfig;
-use crate::storage::Storage;
 use crate::types::{ActorId, Dot, VersionVector};
 use bytes::Bytes;
 use r2d2::Pool;
@@ -7,10 +6,16 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, OptionalExtension, Result, ToSql};
 use std::collections::HashMap;
 use std::path::Path;
+use tracing::trace;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
 /// SQLite implementation of the Storage trait
+/// All the AddWinsSet logic is in the sql.
+/// The purpose of bigsets is to not pay the price
+/// - of reading an entire set from disk and deserialising it before mutatating
+/// - nor after of reserialising it and writing it all back to disk
+/// See the add/remove_[remote]_elements methods for how the AddWins semantics are maintained.
 #[derive(Clone, Debug)]
 pub struct SqliteStorage {
     pool: DbPool,
@@ -22,7 +27,6 @@ impl SqliteStorage {
         let busy_timeout = config.sqlite_busy_timeout;
         let path_ref = path.as_ref();
 
-        // Initialize schema with a single connection first
         {
             let conn = rusqlite::Connection::open(path_ref)?;
             conn.pragma_update(None, "cache_size", cache_size)?;
@@ -33,7 +37,6 @@ impl SqliteStorage {
             Self::create_schema(&conn)?;
         }
 
-        // Now create the pool - schema already exists
         let manager = SqliteConnectionManager::file(path_ref).with_init(move |conn| {
             conn.pragma_update(None, "cache_size", cache_size)?;
             conn.pragma_update(None, "busy_timeout", busy_timeout)?;
@@ -43,7 +46,7 @@ impl SqliteStorage {
         });
 
         let pool = Pool::builder()
-            .max_size(5) // Sized for concurrent reads only (writes are serialized by VV lock)
+            .max_size(5) // Sized for concurrent reads only (writes are serialized)
             .min_idle(Some(1))
             .build(manager)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -51,6 +54,12 @@ impl SqliteStorage {
         Ok(SqliteStorage { pool })
     }
 
+    /// The schema is the AddWinsSet design.
+    /// Some properties:
+    /// - Every dot actor is in the version vector table
+    /// - Every dot counter will be <= the counter in the version_vector table for that actor
+    /// - There will be at most one dot per actor per element
+    /// - Every element has at least one dot
     fn create_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             r#"
@@ -97,10 +106,8 @@ impl SqliteStorage {
     pub fn pool(&self) -> &DbPool {
         &self.pool
     }
-}
 
-impl Storage for SqliteStorage {
-    fn load_vv(&self) -> Result<VersionVector> {
+    pub fn load_vv(&self) -> Result<VersionVector> {
         let conn = self
             .pool
             .get()
@@ -125,7 +132,17 @@ impl Storage for SqliteStorage {
         Ok(VersionVector { counters })
     }
 
-    fn add_elements(&self, set_name: &str, elements: &[Bytes], dot: Dot) -> Result<Vec<Dot>> {
+    /// Adding an element to an AddWinsSet "joins" all the observed concurrent writes for that element (if any).
+    /// The process is:
+    /// - generate a new dot for this add
+    /// - if the set does not exist, create it
+    /// - insert the element into the elements table
+    /// - delete and return every existing dot for this element
+    /// - insert the new element
+    /// - return the set of dots, as these must be replicated to peers as part of the context of the operation.
+    /// Adding an element results in single dot for that element,
+    /// a dot that has replaced (joined) the previously observed concurrent adds.
+    pub fn add_elements(&self, set_name: &str, elements: &[Bytes], dot: Dot) -> Result<Vec<Dot>> {
         if elements.is_empty() {
             return Ok(vec![]);
         }
@@ -147,7 +164,6 @@ impl Storage for SqliteStorage {
         let mut deleted = Vec::new();
         let actor_id = dot.actor_id.bytes();
 
-        // For each element
         for element in elements {
             // Insert element (or get existing element_id)
             let element_id: i64 = tx.query_row(
@@ -186,7 +202,15 @@ impl Storage for SqliteStorage {
         Ok(deleted)
     }
 
-    fn remove_elements(&self, set_name: &str, elements: &[Bytes], dot: Dot) -> Result<Vec<Dot>> {
+    /// Removing an element is much like adding one, in that it returns the set of dots currently supporting that element.
+    /// The main difference is that it doesn't insert a new dot, and it actually _removes_ the element.
+    /// The removed dots are returned to be replicated.
+    pub fn remove_elements(
+        &self,
+        set_name: &str,
+        elements: &[Bytes],
+        dot: Dot,
+    ) -> Result<Vec<Dot>> {
         if elements.is_empty() {
             return Ok(vec![]);
         }
@@ -234,7 +258,7 @@ impl Storage for SqliteStorage {
             })?;
 
             for r in rows {
-                println!("Deleted {:?} dots for element {:?}", r, element);
+                trace!("Deleted {:?} dots for element {:?}", r, element);
                 deleted.push(r?);
             }
             drop(stmt);
@@ -260,7 +284,8 @@ impl Storage for SqliteStorage {
         Ok(deleted)
     }
 
-    fn get_elements(&self, set_name: &str) -> Result<Vec<Bytes>> {
+    /// Since we don't have tombstones this is simply the set of elements for the given set.
+    pub fn get_elements(&self, set_name: &str) -> Result<Vec<Bytes>> {
         let conn = self
             .pool
             .get()
@@ -283,14 +308,15 @@ impl Storage for SqliteStorage {
         rows.collect::<Result<Vec<Bytes>>>()
     }
 
-    fn count_elements(&self, set_name: &str) -> Result<i64> {
+    /// Return the count of elements in the set
+    pub fn count_elements(&self, set_name: &str) -> Result<u64> {
         let conn = self
             .pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
         // Get cardinality
-        let count: i64 = conn.query_row(
+        let count: u64 = conn.query_row(
             r#"
                 SELECT COUNT(e.id)
                 FROM elements e
@@ -304,7 +330,8 @@ impl Storage for SqliteStorage {
         Ok(count)
     }
 
-    fn is_member(&self, set_name: &str, element: &Bytes) -> Result<bool> {
+    // given an element, true if it is present in the set at this replica
+    pub fn is_member(&self, set_name: &str, element: &Bytes) -> Result<bool> {
         let conn = self
             .pool
             .get()
@@ -326,7 +353,9 @@ impl Storage for SqliteStorage {
         Ok(exists != 0)
     }
 
-    fn are_members(&self, set_name: &str, elements: &[Bytes]) -> Result<Vec<bool>> {
+    // Given elements, returns a vec of bool, positionally matching the elements where
+    // true is in the set, and false is not.
+    pub fn are_members(&self, set_name: &str, elements: &[Bytes]) -> Result<Vec<bool>> {
         if elements.is_empty() {
             return Ok(Vec::new());
         }
@@ -380,7 +409,14 @@ impl Storage for SqliteStorage {
         Ok(out)
     }
 
-    fn remote_add_elements(
+    /// A replication received add event.
+    /// Assumption is that if the `Dot` of the event has already been observed this method will not be called.
+    ///
+    /// Much like add_elements above, here the given dot is added for each of the elements,
+    /// and all the dots on removed_dots are removed from the set of supporting dots for each added element.
+    /// Another way to implement this would be to use the remote actors version vector to remove all dots for the given
+    /// elements (and that is (maybe?) a better idea, but demands causal consistency)
+    pub fn replicate_add(
         &self,
         set_name: &str,
         elements: &[Bytes],
@@ -460,7 +496,14 @@ impl Storage for SqliteStorage {
         Ok(())
     }
 
-    fn remote_remove_elements(
+    /// A replication received remove event.
+    /// Assumption is that if the `Dot` of the event has already been observed this method will not be called.
+    ///
+    /// Much like replicated_add aboce, all the dots in removed_dots are removed from the set of supporting dots for each added element.
+    /// Another way to implement this would be to use the remote actors version vector to remove all dots for the given
+    /// elements (and that is maybe a better idea, but demands causal consistency).
+    /// If any element has no dots left, it is removed from the set.
+    pub fn replicate_remove(
         &self,
         set_name: &str,
         elements: &[Bytes],

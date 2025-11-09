@@ -70,3 +70,8 @@ Anti-Entropy (Periodic, all nodes):
 
 ### 12h29
 We're going to need the same versioned data with atomic visibility hack here too, or large updates will block the user
+
+## 14/10/2025
+### 14h17
+TODO:
+- [ ] In replicated_add|remove of storage take the remote version vector and prune dots that way (if we're sure we're enforcing causal consistency)

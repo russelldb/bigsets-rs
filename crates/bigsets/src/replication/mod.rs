@@ -2,4 +2,4 @@ mod manager;
 mod server;
 
 pub use manager::ReplicationManager;
-pub use server::ReplicationServer;
+pub use server::ReplicationListener;

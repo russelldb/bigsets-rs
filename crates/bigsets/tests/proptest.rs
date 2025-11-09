@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
 };
 use tempfile::TempDir;
+use tracing::{debug, trace};
 
 /// The most basic possible add wins set, to use as a full state model
 #[derive(Clone, Debug)]
@@ -164,7 +165,7 @@ struct BigsetNode {
     actor_id: ActorId,
     out_buffer: Vec<Operation>,
     pending_buffer: PendingBuffer,
-    server: Arc<Server<SqliteStorage>>,
+    server: Arc<Server>,
     rt: tokio::runtime::Runtime,
 }
 
@@ -205,13 +206,11 @@ impl Node for BigsetNode {
 
     fn apply_op(&mut self, op: &SetOp, _time: u64) {
         self.rt.block_on(async {
-            println!("applying {:?} to {:?}", op, self.actor_id);
+            trace!("applying {:?} to {:?}", op, self.actor_id);
             let res = match op {
                 SetOp::Add(bytes) => self.server.sadd(SET_NAME, &[bytes.clone()]).await,
                 SetOp::Remove(bytes) => self.server.srem(SET_NAME, &[bytes.clone()]).await,
             };
-
-            println!("result {:?}", res);
 
             match res {
                 Ok((_, Some(rep_op))) => self.out_buffer.push(rep_op),
@@ -227,7 +226,7 @@ impl Node for BigsetNode {
     fn merge_state(&mut self, ops: Self::State) {
         // we can be smarter and not add any ops that were sent from us (the dot says who)
         for op in ops {
-            println!("adding op {:?} to pending", op);
+            trace!("adding op {:?} to pending", op);
             self.pending_buffer.add(op);
         }
 
@@ -236,16 +235,17 @@ impl Node for BigsetNode {
             let mut progress = Some(true);
             while progress.take().unwrap_or(false) {
                 for op in self.pending_buffer.drain() {
-                    println!("applying {:?} to {:?}", op, self.actor_id);
+                    trace!("applying {:?} to {:?}", op, self.actor_id);
                     if self
                         .server
                         .apply_remote_operation(op.clone())
                         .await
                         .unwrap()
                     {
-                        println!("applied {:?} to {:?}", op, self.actor_id);
-                        progress = Some(true);
+                        trace!("applied {:?} to {:?}", op, self.actor_id);
                         // If we want to get closer to the model, we can send these ops on by adding to our out buffer
+                        self.out_buffer.push(op);
+                        progress = Some(true);
                     } else {
                         self.pending_buffer.add(op);
                     }
@@ -459,10 +459,96 @@ impl StateMachineTest for Cluster<BigsetNode> {
         for id in state.nodes.keys() {
             let node_members = state.node_members(*id);
             let ref_node_members = ref_state.node_members(*id);
-            println!("node {:?}, members: {:?}", id, node_members);
-            println!("ref node {:?}, members: {:?}", id, ref_node_members);
 
-            assert_eq!(node_members, ref_node_members, "{:?}", ref_state);
+            assert_eq!(
+                node_members, ref_node_members,
+                "{:?}: {:?}",
+                id, ref_state.nodes[id]
+            );
+        }
+    }
+}
+
+macro_rules! b {
+    ($literal:literal) => {
+        Bytes::from(&$literal[..])
+    };
+}
+
+#[test]
+fn regression() {
+    use Op::*;
+    use SetOp::*;
+    let ops = vec![
+        Update(1, Add(b!(b"mUx4lqp"))),
+        Update(1, Remove(b!(b"mUx4lqp"))),
+        Update(1, Add(b!(b"4x"))),
+        Update(1, Add(b!(b"RYrJy3"))),
+        Update(3, Add(b!(b"1GBC3"))),
+        Update(1, Add(b!(b"UxCNK5"))),
+        Replicate(3, 2),
+        Replicate(1, 2),
+        Replicate(2, 1),
+        Replicate(3, 1),
+        Replicate(2, 1),
+        Update(1, Remove(b!(b"UxCNK5"))),
+        Replicate(1, 2),
+        Replicate(3, 1),
+        Replicate(3, 1),
+        Replicate(1, 2),
+        Replicate(1, 2),
+        Replicate(2, 1),
+        Update(2, Add(b!(b"wzxF50uKM"))),
+        Replicate(3, 1),
+        Replicate(2, 1),
+        Replicate(1, 2),
+        Replicate(3, 1),
+        Replicate(2, 1),
+        Replicate(1, 2),
+        Replicate(1, 2),
+        Replicate(2, 1),
+        Replicate(2, 1),
+        Replicate(1, 3),
+        Replicate(1, 3),
+        Replicate(2, 1),
+        Replicate(1, 3),
+        Replicate(1, 3),
+        Update(1, Add(b!(b"96FB5a735G"))),
+        Replicate(1, 2),
+        Replicate(3, 1),
+        Update(2, Remove(b!(b"96FB5a735G"))),
+        Replicate(2, 1),
+    ];
+
+    run_ce(3, ops);
+}
+
+fn run_ce(node_cnt: usize, ops: Vec<Op>) {
+    tracing_subscriber::fmt::init();
+    let mut ref_state = Cluster::<ModelNode>::new(node_cnt as u16);
+    let mut sut_state = Cluster::<BigsetNode>::new(node_cnt as u16);
+    for op in ops {
+        debug!("op: {:?}", op);
+        match op {
+            Op::Update(id, set_op) => {
+                ref_state.apply_update(id, set_op.clone());
+                sut_state.apply_update(id, set_op);
+            }
+            Op::Replicate(from, to) => {
+                ref_state.replicate(from, to);
+                sut_state.replicate(from, to);
+            }
+        }
+
+        for id in sut_state.nodes.keys() {
+            let node_members = sut_state.node_members(*id);
+            let ref_node_members = ref_state.node_members(*id);
+
+            assert_eq!(
+                node_members, ref_node_members,
+                "{:?}: {:?}",
+                id, ref_state.nodes[id]
+            );
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::resp::{RespError, RespValue};
 use crate::server::CommandResult;
-use crate::storage::Storage;
+
 use crate::types::VersionVector;
 use crate::wrapper::ServerWrapper;
 use bytes::{Buf, Bytes, BytesMut};
@@ -8,19 +8,19 @@ use std::io::Cursor;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info};
 
 /// API server handling RESP protocol over TCP
 ///
 /// Receives Redis-protocol commands, calls ServerWrapper methods,
 /// and returns RESP-formatted responses.
-pub struct ApiServer<S: Storage> {
-    wrapper: Arc<ServerWrapper<S>>,
+pub struct ApiServer {
+    wrapper: Arc<ServerWrapper>,
     addr: String,
 }
 
-impl<S: Storage + 'static> ApiServer<S> {
-    pub fn new(wrapper: Arc<ServerWrapper<S>>, addr: String) -> Self {
+impl ApiServer {
+    pub fn new(wrapper: Arc<ServerWrapper>, addr: String) -> Self {
         Self { wrapper, addr }
     }
 
@@ -43,35 +43,30 @@ impl<S: Storage + 'static> ApiServer<S> {
 
     async fn handle_connection(
         mut socket: TcpStream,
-        wrapper: Arc<ServerWrapper<S>>,
+        wrapper: Arc<ServerWrapper>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut buffer = BytesMut::with_capacity(4096);
 
         loop {
-            // Read from socket
             let n = socket.read_buf(&mut buffer).await?;
             if n == 0 {
                 debug!("Connection closed");
                 return Ok(());
             }
 
-            // Try to parse RESP command
             let mut cursor = Cursor::new(&buffer[..]);
             match RespValue::parse(&mut cursor) {
                 Ok(value) => {
                     let pos = cursor.position() as usize;
                     buffer.advance(pos);
 
-                    // Process command
                     let response = Self::process_command(&wrapper, value).await;
 
-                    // Serialize and send response
                     let mut response_buf = BytesMut::new();
                     response.serialize(&mut response_buf);
                     socket.write_all(&response_buf).await?;
                 }
                 Err(RespError::Incomplete) => {
-                    // Need more data
                     continue;
                 }
                 Err(e) => {
@@ -86,14 +81,12 @@ impl<S: Storage + 'static> ApiServer<S> {
         }
     }
 
-    async fn process_command(wrapper: &Arc<ServerWrapper<S>>, value: RespValue) -> RespValue {
-        // Extract command array
+    async fn process_command(wrapper: &Arc<ServerWrapper>, value: RespValue) -> RespValue {
         let parts = match value.as_bulk_string_array() {
             Some(parts) if !parts.is_empty() => parts,
             _ => return RespValue::Error("ERR invalid command format".to_string()),
         };
 
-        // Get command name (case-insensitive)
         let cmd = String::from_utf8_lossy(&parts[0]).to_uppercase();
 
         match cmd.as_str() {
@@ -108,7 +101,7 @@ impl<S: Storage + 'static> ApiServer<S> {
         }
     }
 
-    async fn cmd_sadd(wrapper: &Arc<ServerWrapper<S>>, parts: &[Bytes]) -> RespValue {
+    async fn cmd_sadd(wrapper: &Arc<ServerWrapper>, parts: &[Bytes]) -> RespValue {
         if parts.len() < 3 {
             return RespValue::Error(
                 "ERR wrong number of arguments for 'sadd' command".to_string(),
@@ -117,10 +110,8 @@ impl<S: Storage + 'static> ApiServer<S> {
 
         let key_name = String::from_utf8_lossy(&parts[1]).to_string();
         let members = &parts[2..];
-        trace!("Calling wrapper for sadd");
         match wrapper.sadd(&key_name, members).await {
             Ok(CommandResult::Ok { vv: Some(vv) }) => {
-                trace!("Got a vv result from sadd");
                 RespValue::SimpleString(format!("OK vv:{}", vv.to_string()))
             }
             Ok(CommandResult::Ok { vv: None }) => RespValue::SimpleString("OK".to_string()),
@@ -133,7 +124,7 @@ impl<S: Storage + 'static> ApiServer<S> {
         }
     }
 
-    async fn cmd_srem(wrapper: &Arc<ServerWrapper<S>>, parts: &[Bytes]) -> RespValue {
+    async fn cmd_srem(wrapper: &Arc<ServerWrapper>, parts: &[Bytes]) -> RespValue {
         if parts.len() < 3 {
             return RespValue::Error(
                 "ERR wrong number of arguments for 'srem' command".to_string(),
@@ -154,7 +145,7 @@ impl<S: Storage + 'static> ApiServer<S> {
         }
     }
 
-    async fn cmd_scard(wrapper: &Arc<ServerWrapper<S>>, parts: &[Bytes]) -> RespValue {
+    async fn cmd_scard(wrapper: &Arc<ServerWrapper>, parts: &[Bytes]) -> RespValue {
         if parts.len() < 2 {
             return RespValue::Error(
                 "ERR wrong number of arguments for 'scard' command".to_string(),
@@ -163,7 +154,6 @@ impl<S: Storage + 'static> ApiServer<S> {
 
         let key_name = String::from_utf8_lossy(&parts[1]).to_string();
 
-        // Check for optional VV context
         let client_vv = if parts.len() > 2 {
             let vv_str = String::from_utf8_lossy(&parts[2]);
             if let Some(vv_str) = vv_str.strip_prefix("vv:") {
@@ -186,7 +176,7 @@ impl<S: Storage + 'static> ApiServer<S> {
         }
     }
 
-    async fn cmd_smembers(wrapper: &Arc<ServerWrapper<S>>, parts: &[Bytes]) -> RespValue {
+    async fn cmd_smembers(wrapper: &Arc<ServerWrapper>, parts: &[Bytes]) -> RespValue {
         if parts.len() < 2 {
             return RespValue::Error(
                 "ERR wrong number of arguments for 'smembers' command".to_string(),
@@ -195,7 +185,6 @@ impl<S: Storage + 'static> ApiServer<S> {
 
         let key_name = String::from_utf8_lossy(&parts[1]).to_string();
 
-        // Optional client version vector for causality
         let client_vv = if parts.len() > 2 {
             let vv_str = String::from_utf8_lossy(&parts[2]);
             if let Some(vv_str) = vv_str.strip_prefix("vv:") {
@@ -224,7 +213,7 @@ impl<S: Storage + 'static> ApiServer<S> {
         }
     }
 
-    async fn cmd_sismember(wrapper: &Arc<ServerWrapper<S>>, parts: &[Bytes]) -> RespValue {
+    async fn cmd_sismember(wrapper: &Arc<ServerWrapper>, parts: &[Bytes]) -> RespValue {
         if parts.len() < 3 {
             return RespValue::Error(
                 "ERR wrong number of arguments for 'sismember' command".to_string(),
@@ -234,7 +223,6 @@ impl<S: Storage + 'static> ApiServer<S> {
         let key_name = String::from_utf8_lossy(&parts[1]).to_string();
         let member = &parts[2];
 
-        // Check for optional VV context
         let client_vv = if parts.len() > 3 {
             let vv_str = String::from_utf8_lossy(&parts[3]);
             if let Some(vv_str) = vv_str.strip_prefix("vv:") {
@@ -260,7 +248,7 @@ impl<S: Storage + 'static> ApiServer<S> {
         }
     }
 
-    async fn cmd_smismember(wrapper: &Arc<ServerWrapper<S>>, parts: &[Bytes]) -> RespValue {
+    async fn cmd_smismember(wrapper: &Arc<ServerWrapper>, parts: &[Bytes]) -> RespValue {
         if parts.len() < 3 {
             return RespValue::Error(
                 "ERR wrong number of arguments for 'smismember' command".to_string(),
@@ -269,7 +257,6 @@ impl<S: Storage + 'static> ApiServer<S> {
 
         let key_name = String::from_utf8_lossy(&parts[1]).to_string();
 
-        // Find where VV context starts (if present)
         let (members, client_vv) = {
             let mut member_end = parts.len();
             let mut vv = None;
