@@ -1,6 +1,6 @@
 use crate::replication::ReplicationManager;
 use crate::server::{CommandResult, Server};
-use crate::storage::Storage;
+
 use crate::types::VersionVector;
 use bytes::Bytes;
 use rusqlite::Result;
@@ -16,13 +16,13 @@ use tracing::{error, trace};
 ///
 /// Write commands split the response: result goes to API, operation goes to replication.
 /// Read commands pass through directly to Server.
-pub struct ServerWrapper<S: Storage> {
-    server: Arc<Server<S>>,
+pub struct ServerWrapper {
+    server: Arc<Server>,
     replication: Arc<ReplicationManager>,
 }
 
-impl<S: Storage> ServerWrapper<S> {
-    pub fn new(server: Arc<Server<S>>, replication: Arc<ReplicationManager>) -> Self {
+impl ServerWrapper {
+    pub fn new(server: Arc<Server>, replication: Arc<ReplicationManager>) -> Self {
         Self {
             server,
             replication,

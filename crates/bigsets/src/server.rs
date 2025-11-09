@@ -1,5 +1,7 @@
-use crate::storage::Storage;
-use crate::types::{ActorId, OpType, Operation, VersionVector};
+use crate::{
+    SqliteStorage,
+    types::{ActorId, OpType, Operation, VersionVector},
+};
 use bytes::Bytes;
 use rusqlite::Result;
 use std::sync::Arc;
@@ -29,18 +31,14 @@ pub enum CommandResult {
 /// and coordinates with storage. Generic over Storage to allow testing
 /// with different backends.
 #[derive(Clone, Debug)]
-pub struct Server<S: Storage> {
+pub struct Server {
     actor_id: ActorId,
-    storage: Arc<S>,
+    storage: Arc<SqliteStorage>,
     version_vector: Arc<RwLock<VersionVector>>,
 }
 
-impl<S: Storage> Server<S> {
-    /// Create a new server with the given storage
-    ///
-    /// Loads the version vector from storage on startup
-    pub async fn new(actor_id: ActorId, storage: Arc<S>) -> Result<Self> {
-        // Load VV from storage
+impl Server {
+    pub async fn new(actor_id: ActorId, storage: Arc<SqliteStorage>) -> Result<Self> {
         let vv = storage.load_vv()?;
 
         Ok(Self {
@@ -86,7 +84,8 @@ impl<S: Storage> Server<S> {
         };
 
         debug!(
-            "SADD {} added {} members with dot {:?}",
+            "{}: SADD {} added {} members with dot {:?}",
+            self.actor_id,
             set_name,
             members.len(),
             dot
@@ -142,7 +141,8 @@ impl<S: Storage> Server<S> {
         };
 
         debug!(
-            "SREM {} removed {} members with dot {:?}",
+            "{}: SREM {} removed {} members with dot {:?}",
+            self.actor_id,
             set_name,
             members.len(),
             dot
@@ -174,7 +174,7 @@ impl<S: Storage> Server<S> {
         }
 
         let count = self.storage.count_elements(set_name)?;
-        Ok(CommandResult::Integer(count))
+        Ok(CommandResult::Integer(count as i64))
     }
 
     /// Get all members of a set
@@ -267,30 +267,22 @@ impl<S: Storage> Server<S> {
                 removed_dots,
                 ..
             } => {
-                self.storage.remote_add_elements(
-                    &operation.set_name,
-                    elements,
-                    removed_dots,
-                    dot,
-                )?;
+                self.storage
+                    .replicate_add(&operation.set_name, elements, removed_dots, dot)?;
             }
             OpType::Remove {
                 elements,
                 removed_dots,
                 ..
             } => {
-                self.storage.remote_remove_elements(
-                    &operation.set_name,
-                    elements,
-                    removed_dots,
-                    dot,
-                )?;
+                self.storage
+                    .replicate_remove(&operation.set_name, elements, removed_dots, dot)?;
             }
         }
 
         debug!(
-            "Applied remote operation for {} with dot {:?}",
-            operation.set_name, dot
+            "{}: Applied remote operation for {} with dot {:?}",
+            self.actor_id, operation.set_name, dot
         );
 
         Ok(true)

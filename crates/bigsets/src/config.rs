@@ -32,7 +32,7 @@ pub struct ClusterConfig {
     pub replicas: Vec<ReplicaInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd, Eq, Ord)]
 pub struct ReplicaInfo {
     pub node_id: u16,
     #[serde(default)]

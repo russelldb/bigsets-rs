@@ -1,6 +1,6 @@
 use crate::replication::ReplicationManager;
 use crate::server::Server;
-use crate::storage::Storage;
+
 use prost::Message;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
@@ -11,14 +11,14 @@ use tracing::{debug, error, info, warn};
 ///
 /// Listens for incoming operations, applies them via Server,
 /// and manages causality buffering via ReplicationManager.
-pub struct ReplicationServer<S: Storage> {
-    server: Arc<Server<S>>,
+pub struct ReplicationListener {
+    server: Arc<Server>,
     replication: Arc<ReplicationManager>,
     addr: String,
 }
 
-impl<S: Storage + 'static> ReplicationServer<S> {
-    pub fn new(server: Arc<Server<S>>, replication: Arc<ReplicationManager>, addr: String) -> Self {
+impl ReplicationListener {
+    pub fn new(server: Arc<Server>, replication: Arc<ReplicationManager>, addr: String) -> Self {
         Self {
             server,
             replication,
@@ -34,7 +34,7 @@ impl<S: Storage + 'static> ReplicationServer<S> {
     ///
     /// Returns the total number of operations applied.
     async fn try_apply_buffered(
-        server: Arc<Server<S>>,
+        server: Arc<Server>,
         replication: Arc<ReplicationManager>,
     ) -> usize {
         let mut total_applied = 0;
@@ -115,7 +115,7 @@ impl<S: Storage + 'static> ReplicationServer<S> {
 
     async fn handle_connection(
         mut socket: TcpStream,
-        server: Arc<Server<S>>,
+        server: Arc<Server>,
         replication: Arc<ReplicationManager>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         loop {

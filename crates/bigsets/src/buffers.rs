@@ -1,3 +1,4 @@
+use crate::ActorId;
 use crate::types::Operation;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -8,7 +9,7 @@ use std::time::Instant;
 /// Used for retransmission on timeout and managing flow control.
 #[derive(Debug)]
 pub struct UnackedBuffer {
-    ops: HashMap<String, Vec<(Operation, Instant, u32)>>, // peer_id -> [(op, sent_at, retry_count)]
+    ops: HashMap<ActorId, Vec<(Operation, Instant, u32)>>, // peer_id -> [(op, sent_at, retry_count)]
 }
 
 impl UnackedBuffer {
@@ -19,7 +20,7 @@ impl UnackedBuffer {
     }
 
     /// Add an operation to the unacked buffer for a specific peer
-    pub fn add(&mut self, peer_id: String, op: Operation) {
+    pub fn add(&mut self, peer_id: ActorId, op: Operation) {
         self.ops
             .entry(peer_id)
             .or_insert_with(Vec::new)
@@ -27,7 +28,7 @@ impl UnackedBuffer {
     }
 
     /// Remove a specific operation from the buffer after acknowledgment
-    pub fn remove(&mut self, peer_id: &str, op_index: usize) -> bool {
+    pub fn remove(&mut self, peer_id: &ActorId, op_index: usize) -> bool {
         if let Some(ops) = self.ops.get_mut(peer_id) {
             if op_index < ops.len() {
                 ops.remove(op_index);
@@ -38,20 +39,20 @@ impl UnackedBuffer {
     }
 
     /// Get all unacked operations for a specific peer
-    pub fn get_peer_ops(&self, peer_id: &str) -> Option<&[(Operation, Instant, u32)]> {
+    pub fn get_peer_ops(&self, peer_id: &ActorId) -> Option<&[(Operation, Instant, u32)]> {
         self.ops.get(peer_id).map(|v| v.as_slice())
     }
 
     /// Get mutable reference to all unacked operations for a specific peer
     pub fn get_peer_ops_mut(
         &mut self,
-        peer_id: &str,
+        peer_id: &ActorId,
     ) -> Option<&mut Vec<(Operation, Instant, u32)>> {
         self.ops.get_mut(peer_id)
     }
 
     /// Get number of unacked operations for a specific peer
-    pub fn peer_count(&self, peer_id: &str) -> usize {
+    pub fn peer_count(&self, peer_id: &ActorId) -> usize {
         self.ops.get(peer_id).map(|v| v.len()).unwrap_or(0)
     }
 
@@ -61,12 +62,12 @@ impl UnackedBuffer {
     }
 
     /// Get all peer IDs that have unacked operations
-    pub fn peers(&self) -> Vec<&String> {
+    pub fn peers(&self) -> Vec<&ActorId> {
         self.ops.keys().collect()
     }
 
     /// Clear all unacked operations for a specific peer
-    pub fn clear_peer(&mut self, peer_id: &str) {
+    pub fn clear_peer(&mut self, peer_id: &ActorId) {
         self.ops.remove(peer_id);
     }
 
@@ -177,7 +178,7 @@ mod tests {
 
     fn create_test_op(set_name: &str, counter: u64) -> Operation {
         Operation {
-            set_name: set_name.to_string(),
+            set_name: set_name.to_owned(),
             op_type: OpType::Add {
                 elements: vec![Bytes::from("test")],
                 dot: Dot {
@@ -200,26 +201,29 @@ mod tests {
     #[test]
     fn test_unacked_buffer_add() {
         let mut buffer = UnackedBuffer::new();
+        let peer_1 = ActorId::from_node_id(1);
         let op1 = create_test_op("set1", 1);
         let op2 = create_test_op("set1", 2);
 
-        buffer.add("peer1".to_string(), op1);
-        buffer.add("peer1".to_string(), op2);
+        buffer.add(peer_1, op1);
+        buffer.add(peer_1, op2);
 
-        assert_eq!(buffer.peer_count("peer1"), 2);
+        assert_eq!(buffer.peer_count(&peer_1), 2);
         assert_eq!(buffer.total_count(), 2);
     }
 
     #[test]
     fn test_unacked_buffer_add_multiple_peers() {
         let mut buffer = UnackedBuffer::new();
+        let peer_1 = ActorId::from_node_id(1);
+        let peer_2 = ActorId::from_node_id(2);
 
-        buffer.add("peer1".to_string(), create_test_op("set1", 1));
-        buffer.add("peer2".to_string(), create_test_op("set2", 1));
-        buffer.add("peer1".to_string(), create_test_op("set1", 2));
+        buffer.add(peer_1, create_test_op("set1", 1));
+        buffer.add(peer_2, create_test_op("set2", 1));
+        buffer.add(peer_1, create_test_op("set1", 2));
 
-        assert_eq!(buffer.peer_count("peer1"), 2);
-        assert_eq!(buffer.peer_count("peer2"), 1);
+        assert_eq!(buffer.peer_count(&peer_1), 2);
+        assert_eq!(buffer.peer_count(&peer_2), 1);
         assert_eq!(buffer.total_count(), 3);
         assert_eq!(buffer.peers().len(), 2);
     }
@@ -227,50 +231,60 @@ mod tests {
     #[test]
     fn test_unacked_buffer_remove() {
         let mut buffer = UnackedBuffer::new();
-        buffer.add("peer1".to_string(), create_test_op("set1", 1));
-        buffer.add("peer1".to_string(), create_test_op("set1", 2));
+        let peer_1 = ActorId::from_node_id(1);
+        buffer.add(peer_1, create_test_op("set1", 1));
+        buffer.add(peer_1, create_test_op("set1", 2));
 
-        assert!(buffer.remove("peer1", 0));
-        assert_eq!(buffer.peer_count("peer1"), 1);
+        assert!(buffer.remove(&peer_1, 0));
+        assert_eq!(buffer.peer_count(&peer_1), 1);
 
-        assert!(buffer.remove("peer1", 0));
-        assert_eq!(buffer.peer_count("peer1"), 0);
+        assert!(buffer.remove(&peer_1, 0));
+        assert_eq!(buffer.peer_count(&peer_1), 0);
 
-        assert!(!buffer.remove("peer1", 0)); // Nothing left to remove
+        assert!(!buffer.remove(&peer_1, 0)); // Nothing left to remove
     }
 
     #[test]
     fn test_unacked_buffer_get_peer_ops() {
         let mut buffer = UnackedBuffer::new();
+        let peer_1 = ActorId::from_node_id(1);
+        let peer_2 = ActorId::from_node_id(2);
+
         let op1 = create_test_op("set1", 1);
 
-        buffer.add("peer1".to_string(), op1.clone());
+        buffer.add(peer_1, op1.clone());
 
-        let ops = buffer.get_peer_ops("peer1").unwrap();
+        let ops = buffer.get_peer_ops(&peer_1).unwrap();
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].0.set_name, "set1");
 
-        assert!(buffer.get_peer_ops("peer2").is_none());
+        assert!(buffer.get_peer_ops(&peer_2).is_none());
     }
 
     #[test]
     fn test_unacked_buffer_clear_peer() {
         let mut buffer = UnackedBuffer::new();
-        buffer.add("peer1".to_string(), create_test_op("set1", 1));
-        buffer.add("peer2".to_string(), create_test_op("set2", 1));
+        let peer_1 = ActorId::from_node_id(1);
+        let peer_2 = ActorId::from_node_id(2);
 
-        buffer.clear_peer("peer1");
+        buffer.add(peer_1, create_test_op("set1", 1));
+        buffer.add(peer_2, create_test_op("set2", 1));
 
-        assert_eq!(buffer.peer_count("peer1"), 0);
-        assert_eq!(buffer.peer_count("peer2"), 1);
+        buffer.clear_peer(&peer_1);
+
+        assert_eq!(buffer.peer_count(&peer_1), 0);
+        assert_eq!(buffer.peer_count(&peer_2), 1);
         assert_eq!(buffer.total_count(), 1);
     }
 
     #[test]
     fn test_unacked_buffer_clear_all() {
         let mut buffer = UnackedBuffer::new();
-        buffer.add("peer1".to_string(), create_test_op("set1", 1));
-        buffer.add("peer2".to_string(), create_test_op("set2", 1));
+        let peer_1 = ActorId::from_node_id(1);
+        let peer_2 = ActorId::from_node_id(2);
+
+        buffer.add(peer_1, create_test_op("set1", 1));
+        buffer.add(peer_2, create_test_op("set2", 1));
 
         buffer.clear_all();
 
@@ -383,25 +397,28 @@ mod tests {
     #[test]
     fn test_unacked_buffer_retry_tracking() {
         let mut buffer = UnackedBuffer::new();
-        buffer.add("peer1".to_string(), create_test_op("set1", 1));
+        let peer_1 = ActorId::from_node_id(1);
+        buffer.add(peer_1, create_test_op("set1", 1));
 
         // Get mutable reference and increment retry count
-        if let Some(ops) = buffer.get_peer_ops_mut("peer1") {
+        if let Some(ops) = buffer.get_peer_ops_mut(&peer_1) {
             ops[0].2 += 1; // Increment retry count
         }
 
-        let ops = buffer.get_peer_ops("peer1").unwrap();
+        let ops = buffer.get_peer_ops(&peer_1).unwrap();
         assert_eq!(ops[0].2, 1); // Verify retry count
     }
 
     #[test]
     fn test_unacked_buffer_timestamp_tracking() {
         let mut buffer = UnackedBuffer::new();
+        let peer_1 = ActorId::from_node_id(1);
+
         let before = Instant::now();
-        buffer.add("peer1".to_string(), create_test_op("set1", 1));
+        buffer.add(peer_1, create_test_op("set1", 1));
         let after = Instant::now();
 
-        let ops = buffer.get_peer_ops("peer1").unwrap();
+        let ops = buffer.get_peer_ops(&peer_1).unwrap();
         assert!(ops[0].1 >= before);
         assert!(ops[0].1 <= after);
     }

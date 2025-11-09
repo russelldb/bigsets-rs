@@ -12,7 +12,7 @@ use std::str::FromStr;
 /// - epoch: Restart/generation counter (0-255, defaults to 0)
 ///
 /// Human-readable format: "v0:1234:5" (version:node:epoch)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ActorId {
     bytes: [u8; 4],
 }
@@ -77,6 +77,12 @@ impl fmt::Display for ActorId {
     }
 }
 
+impl fmt::Debug for ActorId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
 impl FromStr for ActorId {
     type Err = ActorIdError;
 
@@ -123,10 +129,22 @@ impl fmt::Display for ActorIdError {
 impl std::error::Error for ActorIdError {}
 
 /// A logical timestamp representing an actor and counter pair
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Dot {
     pub actor_id: ActorId,
     pub counter: u64,
+}
+
+impl fmt::Debug for Dot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Dot({}, {})", self.actor_id, self.counter)
+    }
+}
+
+impl fmt::Display for Dot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
 }
 
 impl Dot {

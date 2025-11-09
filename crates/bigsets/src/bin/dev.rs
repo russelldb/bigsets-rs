@@ -1,15 +1,15 @@
 use bigsets::{
-    ApiServer, ReplicationManager, ReplicationServer, Server, ServerWrapper, SqliteStorage,
+    ApiServer, ReplicationListener, ReplicationManager, Server, ServerWrapper, SqliteStorage,
     config::{ClusterConfig, Config, ReplicaInfo, ReplicationConfig, ServerConfig, StorageConfig},
 };
 use clap::Parser;
-use std::path::PathBuf;
 use std::sync::Arc;
+use std::{collections::BTreeSet, path::PathBuf};
 use tempfile::TempDir;
 use tracing::{error, info};
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Run multiple BigSets nodes locally for development", long_about = None)]
+#[command(author, version, about = "Run multiple Bigsets nodes locally for development", long_about = None)]
 struct Args {
     /// Number of nodes to start
     #[arg(short, long, default_value = "3")]
@@ -22,13 +22,12 @@ struct Args {
 
 struct NodeSetup {
     config: Config,
-    _temp_dir: Option<TempDir>, // Keep alive to prevent cleanup
+    _temp_dir: Option<TempDir>,
 }
 
 fn generate_node_configs(num_nodes: u16, data_dir: Option<PathBuf>) -> Vec<NodeSetup> {
     let mut configs = Vec::new();
 
-    // Generate replica list for cluster config (all nodes)
     let replicas: Vec<ReplicaInfo> = (1..=num_nodes)
         .map(|i| ReplicaInfo {
             node_id: i,
@@ -37,7 +36,6 @@ fn generate_node_configs(num_nodes: u16, data_dir: Option<PathBuf>) -> Vec<NodeS
         })
         .collect();
 
-    // Default replication and storage configs
     let replication_config = ReplicationConfig {
         max_retries: 5,
         retry_backoff_ms: 100,
@@ -51,15 +49,12 @@ fn generate_node_configs(num_nodes: u16, data_dir: Option<PathBuf>) -> Vec<NodeS
         sqlite_busy_timeout: 5000,
     };
 
-    // Generate config for each node
     for node_id in 1..=num_nodes {
         let (db_path, temp_dir) = if let Some(ref base_dir) = data_dir {
-            // Use data_dir/node_id/ subdirectory
             let node_dir = base_dir.join(format!("{}", node_id));
             let path = node_dir.join("node.db");
             (path, None)
         } else {
-            // Use temporary directory
             let temp_dir = TempDir::new().expect("Failed to create temp directory");
             let path = temp_dir.path().join("node.db");
             (path, Some(temp_dir))
@@ -93,10 +88,8 @@ fn generate_node_configs(num_nodes: u16, data_dir: Option<PathBuf>) -> Vec<NodeS
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
     tracing_subscriber::fmt::init();
 
-    // Parse command line arguments
     let args = Args::parse();
 
     if args.nodes == 0 {
@@ -106,7 +99,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting {}-node local cluster...", args.nodes);
 
-    // Create data directories if needed
     if let Some(ref data_dir) = args.data_dir {
         for node_id in 1..=args.nodes {
             let node_dir = data_dir.join(format!("{}", node_id));
@@ -114,10 +106,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Generate configurations for all nodes
     let node_setups = generate_node_configs(args.nodes, args.data_dir);
 
-    // Print node information
     for setup in &node_setups {
         info!(
             "Node {}: API={}, Replication={}, DB={:?}",
@@ -128,7 +118,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Start all nodes as separate tokio tasks
     let mut tasks = Vec::new();
 
     for setup in &node_setups {
@@ -136,7 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let node_id = config.server.node_id;
 
         let task = tokio::spawn(async move {
-            // Create storage
+            // this looks like main.rs, maybe it should be a mod
             let storage = match SqliteStorage::open(&config.server.db_path, &config.storage) {
                 Ok(s) => Arc::new(s),
                 Err(e) => {
@@ -145,7 +134,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            // Create server
             let server = match Server::new(config.server.actor_id(), Arc::clone(&storage)).await {
                 Ok(s) => Arc::new(s),
                 Err(e) => {
@@ -154,8 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            // Create replication manager
-            let peers: Vec<_> = config
+            let peers: BTreeSet<_> = config
                 .cluster
                 .replicas
                 .iter()
@@ -168,13 +155,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config.replication.buffer_size,
             ));
 
-            // Create wrapper
             let wrapper = Arc::new(ServerWrapper::new(
                 Arc::clone(&server),
                 Arc::clone(&replication),
             ));
 
-            // Start API server
             let api_server = ApiServer::new(Arc::clone(&wrapper), config.server.api_addr.clone());
             let api_handle = tokio::spawn(async move {
                 if let Err(e) = api_server.run().await {
@@ -182,8 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
 
-            // Start replication server
-            let replication_server = ReplicationServer::new(
+            let replication_server = ReplicationListener::new(
                 Arc::clone(&server),
                 Arc::clone(&replication),
                 config.server.replication_addr.clone(),
@@ -194,7 +178,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
 
-            // Wait for both servers
             if let Err(e) = tokio::try_join!(api_handle, repl_handle) {
                 error!("Node {} error: {}", node_id, e);
             }
@@ -203,12 +186,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tasks.push(task);
     }
 
-    // Keep node_setups alive to prevent temp directories from being deleted
     let _keep_alive = node_setups;
 
     info!("All nodes started. Press Ctrl+C to stop.");
 
-    // Wait for Ctrl+C or any task to complete
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("Received Ctrl+C, shutting down...");

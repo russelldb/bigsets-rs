@@ -1,15 +1,14 @@
 use bigsets::{
-    ApiServer, Config, ReplicationManager, ReplicationServer, Server, ServerWrapper, SqliteStorage,
+    ApiServer, Config, ReplicationListener, ReplicationManager, Server, ServerWrapper,
+    SqliteStorage,
 };
 use std::sync::Arc;
 use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
     tracing_subscriber::fmt::init();
 
-    // Load configuration
     let config = Config::from_file("config.toml")?;
     info!("Starting BigSets server");
     info!("Actor ID: {}", config.server.actor_id());
@@ -19,18 +18,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(parent)?;
     }
 
-    // 1. Create storage layer
     info!("Opening database at: {:?}", config.server.db_path);
     let storage = Arc::new(SqliteStorage::open(
         &config.server.db_path,
         &config.storage,
     )?);
 
-    // 2. Create core server (business logic)
     let server = Arc::new(Server::new(config.server.actor_id(), Arc::clone(&storage)).await?);
     info!("Core server initialized");
 
-    // 3. Create replication manager (networking, buffers)
     let replication = Arc::new(ReplicationManager::new(
         config
             .cluster
@@ -43,7 +39,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     info!("Replication manager initialized");
 
-    // 4. Create wrapper (coordinates server + replication)
     let wrapper = Arc::new(ServerWrapper::new(
         Arc::clone(&server),
         Arc::clone(&replication),
@@ -59,14 +54,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     info!("API server started on {}", config.server.api_addr);
 
-    // 6. Start replication server (protobuf/TCP)
-    let replication_server = ReplicationServer::new(
+    // 6. Start replication endpoint (protobuf/TCP)
+    let replication_listener = ReplicationListener::new(
         Arc::clone(&server),
         Arc::clone(&replication),
         config.server.replication_addr.clone(),
     );
     let repl_handle = tokio::spawn(async move {
-        if let Err(e) = replication_server.run().await {
+        if let Err(e) = replication_listener.run().await {
             tracing::error!("Replication server error: {}", e);
         }
     });
@@ -75,9 +70,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.server.replication_addr
     );
 
-    info!("BigSets server fully initialized and running");
+    info!("Bigsets server fully initialized and running");
 
-    // Wait for both servers
+    // Wait for both endpoint servers
     tokio::try_join!(api_handle, repl_handle)?;
 
     Ok(())
